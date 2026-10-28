@@ -448,7 +448,10 @@ identities and open one or more TCP streams over an in-process Tailscale
 userspace WireGuard network. Magicsock starts through DERP and promotes the
 connection to a direct UDP path whenever NAT traversal succeeds. If the peer is
 a browser, an older client, or Tailcat setup fails, both clients use croc's
-existing relay data ports. The public spelling `--transport derp` is retained;
+existing relay data ports. Auto mode only tries Tailcat for transfers of at
+least 128 MiB; smaller ones use the croc relay. Change that with
+`--direct-threshold`, for example `--direct-threshold 0` to try a direct path
+for every transfer or `--direct-threshold 16MiB`. The public spelling `--transport derp` is retained;
 in strict mode it requires Tailcat support and disables croc-relay fallback.
 Public DERP is best effort and may apply fairness limits; see Tailscale's
 [DERP reference](https://tailscale.com/docs/reference/derp-servers) and

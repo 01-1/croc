@@ -543,6 +543,16 @@ func TestTransportRejectsInvalidValuesAndIncompatibleCLIOptions(t *testing.T) {
 			want: "--transport must be auto for local-only transfers",
 		},
 		{
+			name: "direct threshold with relay",
+			args: []string{"croc", "--ignore-stdin", "send", "--transport", "relay", "--direct-threshold", "0", "--text", "hello"},
+			want: "--direct-threshold only applies to --transport auto",
+		},
+		{
+			name: "invalid direct threshold",
+			args: []string{"croc", "--ignore-stdin", "send", "--direct-threshold", "lots", "--text", "hello"},
+			want: `--direct-threshold: invalid byte size "lots"`,
+		},
+		{
 			name: "stored derp",
 			args: []string{"croc", "--ignore-stdin", "send", "--transport", "derp", "--store", "unused"},
 			want: "--transport must be auto for stored transfers",
@@ -1197,6 +1207,41 @@ func TestApplyRememberedSendOptionsTransport(t *testing.T) {
 					applyRememberedSendOptions(ctx, &options, croc.Options{Transport: test.remembered})
 					if options.Transport != test.want {
 						t.Fatalf("Transport = %q, want %q", options.Transport, test.want)
+					}
+					return nil
+				}
+				if err := app.Run(test.args); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			t.Fatal("send command not found")
+		})
+	}
+}
+
+func TestRememberedDirectThreshold(t *testing.T) {
+	remembered := int64(16 << 20)
+	for _, test := range []struct {
+		name string
+		args []string
+		want *int64
+	}{
+		{name: "inherits remembered threshold", args: []string{"croc", "send"}, want: &remembered},
+		{name: "explicit threshold overrides remembered", args: []string{"croc", "send", "--direct-threshold", "0"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := newApp()
+			for _, command := range app.Commands {
+				if command.Name != "send" {
+					continue
+				}
+				command.Action = func(ctx *cli.Context) error {
+					var options croc.Options
+					applyRememberedSendOptions(ctx, &options, croc.Options{AutoTailcatThreshold: &remembered})
+					if (options.AutoTailcatThreshold == nil) != (test.want == nil) ||
+						(test.want != nil && *options.AutoTailcatThreshold != *test.want) {
+						t.Fatalf("AutoTailcatThreshold = %v, want %v", options.AutoTailcatThreshold, test.want)
 					}
 					return nil
 				}

@@ -130,6 +130,11 @@ type Options struct {
 	DisableClipboard  bool
 	ExtendedClipboard bool
 	Transport         TransportMode `json:",omitempty"`
+	// AutoTailcatThreshold is the smallest transfer, in bytes, for which
+	// TransportAuto tries a direct Tailcat path; smaller transfers use the
+	// croc relay. Nil uses the default of 128 MiB, and zero tries Tailcat
+	// for every transfer.
+	AutoTailcatThreshold *int64 `json:",omitempty"`
 }
 
 // TransportMode controls how a sender selects the file-data connection after
@@ -418,6 +423,9 @@ func newClient(ops Options, transport tailcatDataTransport) (c *Client, err erro
 	c.Options.Transport, _ = resolveTransportMode(c.Options.Transport, c.dataTransport().Available())
 	if !c.Options.IsSender && c.Options.Transport != TransportAuto {
 		return nil, errors.New("transport selection is sender-only")
+	}
+	if threshold := c.Options.AutoTailcatThreshold; threshold != nil && *threshold < 0 {
+		return nil, fmt.Errorf("auto Tailcat threshold %d must not be negative", *threshold)
 	}
 	Debug(c.Options.Debug)
 	if c.Options.Transport != TransportAuto && c.Options.OnlyLocal {

@@ -18,6 +18,7 @@ import (
 	"github.com/schollz/croc/v11/src/models"
 	"github.com/schollz/croc/v11/src/publicrelay"
 	storeapi "github.com/schollz/croc/v11/src/store"
+	"github.com/schollz/croc/v11/src/utils"
 	buildversion "github.com/schollz/croc/v11/src/version"
 	"github.com/schollz/croc/v11/src/webassets"
 	"github.com/schollz/croc/v11/src/webrelay"
@@ -108,15 +109,15 @@ func serve(ctx context.Context, c *cli.Context) error {
 		if parseErr != nil {
 			return fmt.Errorf("invalid --store-max-expiration: %w", parseErr)
 		}
-		maxTransfer, parseErr := parseByteSize(c.String("store-max-transfer"))
+		maxTransfer, parseErr := utils.ParseByteSize(c.String("store-max-transfer"))
 		if parseErr != nil {
 			return fmt.Errorf("invalid --store-max-transfer: %w", parseErr)
 		}
-		maxTotal, parseErr := parseByteSize(c.String("store-quota"))
+		maxTotal, parseErr := utils.ParseByteSize(c.String("store-quota"))
 		if parseErr != nil {
 			return fmt.Errorf("invalid --store-quota: %w", parseErr)
 		}
-		minFree, parseErr := parseByteSize(c.String("store-min-free"))
+		minFree, parseErr := utils.ParseByteSize(c.String("store-min-free"))
 		if parseErr != nil {
 			return fmt.Errorf("invalid --store-min-free: %w", parseErr)
 		}
@@ -191,41 +192,6 @@ func parseRelayHosts(value string) []string {
 		}
 	}
 	return hosts
-}
-
-func parseByteSize(value string) (int64, error) {
-	normalized := strings.TrimSpace(strings.ToUpper(value))
-	if normalized == "" {
-		return 0, errors.New("size cannot be empty")
-	}
-	multipliers := []struct {
-		suffix     string
-		multiplier int64
-	}{
-		{"TIB", 1 << 40},
-		{"GIB", 1 << 30},
-		{"MIB", 1 << 20},
-		{"KIB", 1 << 10},
-		{"TB", 1_000_000_000_000},
-		{"GB", 1_000_000_000},
-		{"MB", 1_000_000},
-		{"KB", 1_000},
-		{"B", 1},
-	}
-	multiplier := int64(1)
-	number := normalized
-	for _, candidate := range multipliers {
-		if strings.HasSuffix(normalized, candidate.suffix) {
-			multiplier = candidate.multiplier
-			number = strings.TrimSpace(strings.TrimSuffix(normalized, candidate.suffix))
-			break
-		}
-	}
-	parsed, err := strconv.ParseInt(number, 10, 64)
-	if err != nil || parsed < 0 || (parsed > 0 && parsed > (1<<63-1)/multiplier) {
-		return 0, fmt.Errorf("invalid byte size %q", value)
-	}
-	return parsed * multiplier, nil
 }
 
 func resolveServeAddress(publicAddress, bindAddress string, bindExplicit bool) (string, string, error) {

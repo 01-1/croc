@@ -19,6 +19,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -415,6 +416,43 @@ func GetRandomName() string {
 		panic(err)
 	}
 	return name
+}
+
+// ParseByteSize parses a non-negative byte count with an optional decimal (KB,
+// MB, GB, TB) or binary (KiB, MiB, GiB, TiB) suffix, ignoring case.
+func ParseByteSize(value string) (int64, error) {
+	normalized := strings.TrimSpace(strings.ToUpper(value))
+	if normalized == "" {
+		return 0, errors.New("size cannot be empty")
+	}
+	multipliers := []struct {
+		suffix     string
+		multiplier int64
+	}{
+		{"TIB", 1 << 40},
+		{"GIB", 1 << 30},
+		{"MIB", 1 << 20},
+		{"KIB", 1 << 10},
+		{"TB", 1_000_000_000_000},
+		{"GB", 1_000_000_000},
+		{"MB", 1_000_000},
+		{"KB", 1_000},
+		{"B", 1},
+	}
+	multiplier := int64(1)
+	number := normalized
+	for _, candidate := range multipliers {
+		if strings.HasSuffix(normalized, candidate.suffix) {
+			multiplier = candidate.multiplier
+			number = strings.TrimSpace(strings.TrimSuffix(normalized, candidate.suffix))
+			break
+		}
+	}
+	parsed, err := strconv.ParseInt(number, 10, 64)
+	if err != nil || parsed < 0 || (parsed > 0 && parsed > (1<<63-1)/multiplier) {
+		return 0, fmt.Errorf("invalid byte size %q", value)
+	}
+	return parsed * multiplier, nil
 }
 
 // ByteCountDecimal converts bytes to human readable byte string
