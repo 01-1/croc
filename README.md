@@ -450,6 +450,14 @@ connection to a direct UDP path whenever NAT traversal succeeds. If the peer is
 a browser, an older client, or Tailcat setup fails, both clients use croc's
 existing relay data ports. The public spelling `--transport derp` is retained;
 in strict mode it requires Tailcat support and disables croc-relay fallback.
+
+`--transport direct` keeps file data off every third party. It uses Tailcat
+for transfers of any size, waits until magicsock confirms a direct UDP path to
+the receiver before sending file data, and then disables DERP on the sender so
+nothing can fall back to a relay. If no direct path appears within the setup
+window, or the path is lost during the transfer, croc stops with an error
+instead of relaying. The code-phrase handshake and control messages still use
+the croc relay. Browser receivers cannot use it.
 Public DERP is best effort and may apply fairness limits; see Tailscale's
 [DERP reference](https://tailscale.com/docs/reference/derp-servers) and
 [performance guidance](https://tailscale.com/docs/reference/troubleshooting/poor-performance-tailnet).

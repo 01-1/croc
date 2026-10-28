@@ -191,8 +191,8 @@ func (c *Client) activateSecureChannel(attempt *transferAttemptState) (err error
 	if !c.Options.IsSender && c.peerRequiresTailcat() && !localTailcat {
 		return fmt.Errorf("peer requires Tailcat, but Tailcat is disabled or unavailable locally")
 	}
-	if c.Options.Transport == TransportDERP && !c.tailcat.peerCapable {
-		return fmt.Errorf("--transport derp requires a Tailcat-capable peer")
+	if c.Options.Transport.requiresTailcat() && !c.tailcat.peerCapable {
+		return fmt.Errorf("--transport %s requires a Tailcat-capable peer", c.Options.Transport)
 	}
 	if localTailcat && c.tailcat.peerCapable {
 		if c.Options.IsSender {
@@ -214,7 +214,7 @@ func (c *Client) pakeFeatures() []string {
 		return features
 	}
 	features = append(features, tailcatFeature)
-	if c.Options.IsSender && c.Options.Transport == TransportDERP {
+	if c.Options.IsSender && c.Options.Transport.requiresTailcat() {
 		features = append(features, tailcatRequiredFeature)
 	}
 	return features
@@ -224,7 +224,7 @@ func (c *Client) localTailcatSupported() bool {
 	if c.Options.Transport == TransportRelay || c.Options.OnlyLocal || !c.dataTransport().Available() {
 		return false
 	}
-	if !c.Options.IsSender || c.Options.Transport == TransportDERP {
+	if !c.Options.IsSender || c.Options.Transport.requiresTailcat() {
 		return true
 	}
 	return c.autoTailcatEligible()
@@ -489,6 +489,16 @@ func (c *Client) activateTailcatSender(attempt *transferAttemptState) error {
 			_ = listener.Close()
 			cancel()
 			return c.selectRelayAfterTailcatFailure("peer connection", bundleErr, tokenValue, attempt)
+		}
+		if c.Options.Transport == TransportDirect {
+			if err := c.requireDirectPath(result.bundle, decisionDeadline); err != nil {
+				_ = result.bundle.Close()
+				_ = listener.Close()
+				cancel()
+				c.sendPeerError(err)
+				return err
+			}
+			c.guardDirectPath(result.bundle, attempt)
 		}
 		if err := message.Send(c.connection(0), c.Key, message.Message{
 			Type:    message.TypeTransportSelect,

@@ -141,7 +141,16 @@ const (
 	TransportAuto  TransportMode = "auto"
 	TransportDERP  TransportMode = "derp"
 	TransportRelay TransportMode = "relay"
+	// TransportDirect requires Tailcat and sends file data only after the
+	// path to the receiver is direct, never through DERP or the croc relay.
+	// The handshake and control messages may still use the relay.
+	TransportDirect TransportMode = "direct"
 )
+
+// requiresTailcat reports whether mode forbids croc-relay file data.
+func (mode TransportMode) requiresTailcat() bool {
+	return mode == TransportDERP || mode == TransportDirect
+}
 
 // ParseTransportMode validates and normalizes a transport name. An empty value
 // is the API-compatible spelling of the default auto mode.
@@ -151,30 +160,38 @@ func ParseTransportMode(value string) (TransportMode, error) {
 		mode = TransportAuto
 	}
 	switch mode {
-	case TransportAuto, TransportDERP, TransportRelay:
+	case TransportAuto, TransportDERP, TransportRelay, TransportDirect:
 		return mode, nil
 	default:
-		return "", fmt.Errorf("invalid transport %q (choose auto, derp, or relay)", value)
+		return "", fmt.Errorf("invalid transport %q (choose auto, derp, direct, or relay)", value)
 	}
 }
 
-func resolveTransportMode(mode TransportMode, tailcatAvailable bool) (effective TransportMode, downgraded bool) {
-	if mode == TransportDERP && !tailcatAvailable {
-		return TransportRelay, true
+var errDirectUnavailable = errors.New("--transport direct requires Tailcat, which this croc build does not include")
+
+func resolveTransportMode(mode TransportMode, tailcatAvailable bool) (effective TransportMode, downgraded bool, err error) {
+	if tailcatAvailable {
+		return mode, false, nil
 	}
-	return mode, false
+	switch mode {
+	case TransportDERP:
+		return TransportRelay, true, nil
+	case TransportDirect:
+		return "", false, errDirectUnavailable
+	}
+	return mode, false, nil
 }
 
 // ResolveTransportMode validates a transport name and resolves it against the
-// capabilities compiled into this binary. Relay-only builds downgrade strict
-// Tailcat requests to the croc relay and report that choice to the caller.
+// capabilities compiled into this binary. Relay-only builds downgrade
+// --transport derp to the croc relay and report that choice to the caller;
+// --transport direct is rejected because it must never relay file data.
 func ResolveTransportMode(value string) (effective TransportMode, downgraded bool, err error) {
 	mode, err := ParseTransportMode(value)
 	if err != nil {
 		return "", false, err
 	}
-	effective, downgraded = resolveTransportMode(mode, tailcattransport.Available())
-	return effective, downgraded, nil
+	return resolveTransportMode(mode, tailcattransport.Available())
 }
 
 type SimpleMessage struct {
@@ -302,6 +319,8 @@ type Client struct {
 	relayStandbyReady        bool
 	stagedRelayDelayOverride time.Duration
 	stagedSelectionOverride  time.Duration
+	directPathPollOverride   time.Duration
+	directPathGraceOverride  time.Duration
 	senderRouteWaitOverride  time.Duration
 	localIPLookup            func() ([]string, error)
 	relayDataOpen            func(*transferAttemptState, []int, bool) error
@@ -386,6 +405,9 @@ var (
 	// ErrDERPConnection is the compatibility sentinel for failures in the
 	// Tailcat-backed data path selected by --transport derp.
 	ErrDERPConnection = errors.New("DERP connection failed")
+	// ErrDirectPath marks a --transport direct transfer that stopped because
+	// no direct path to the peer existed, or the direct path was lost.
+	ErrDirectPath = errors.New("no direct path to peer")
 )
 
 func supportsFeature(features []string, wanted string) bool {
@@ -415,7 +437,10 @@ func newClient(ops Options, transport tailcatDataTransport) (c *Client, err erro
 	if err != nil {
 		return nil, err
 	}
-	c.Options.Transport, _ = resolveTransportMode(c.Options.Transport, c.dataTransport().Available())
+	c.Options.Transport, _, err = resolveTransportMode(c.Options.Transport, c.dataTransport().Available())
+	if err != nil {
+		return nil, err
+	}
 	if !c.Options.IsSender && c.Options.Transport != TransportAuto {
 		return nil, errors.New("transport selection is sender-only")
 	}
@@ -423,9 +448,9 @@ func newClient(ops Options, transport tailcatDataTransport) (c *Client, err erro
 	if c.Options.Transport != TransportAuto && c.Options.OnlyLocal {
 		return nil, errors.New("--transport cannot be combined with --local unless it is auto")
 	}
-	if c.Options.Transport == TransportDERP {
+	if c.Options.Transport.requiresTailcat() {
 		if c.Options.ShowQrCode {
-			return nil, errors.New("--transport derp cannot be combined with --qrcode")
+			return nil, fmt.Errorf("--transport %s cannot be combined with --qrcode", c.Options.Transport)
 		}
 	}
 
@@ -1781,7 +1806,7 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 		flags.WriteString("--pass " + c.Options.RelayPassword + " ")
 	}
 	webURL := ""
-	if c.Options.Transport != TransportDERP {
+	if !c.Options.Transport.requiresTailcat() {
 		webURL = webReceiveURL(c.Options.SharedSecret)
 	}
 	clipboardNotice := ""

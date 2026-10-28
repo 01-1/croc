@@ -94,7 +94,7 @@ func newApp() *cli.App {
 			Flags: append([]cli.Flag{
 				&cli.BoolFlag{Name: "zip", Usage: "zip folder before sending"},
 				&cli.StringFlag{Name: "code", Aliases: []string{"c"}, Usage: "codephrase used to connect to relay (at least 6 characters)"},
-				&cli.StringFlag{Name: "transport", Value: string(croc.TransportAuto), Usage: "sender file data transport (auto, derp, relay)"},
+				&cli.StringFlag{Name: "transport", Value: string(croc.TransportAuto), Usage: "sender file data transport (auto, derp, direct, relay)"},
 				&cli.StringFlag{Name: "hash", Value: "xxhash", Usage: "hash algorithm (xxhash, imohash, md5, highway)"},
 				&cli.StringFlag{Name: "text", Aliases: []string{"t"}, Usage: "send some text"},
 				&cli.BoolFlag{Name: "no-local", Usage: "disable local relay when sending"},
@@ -701,8 +701,8 @@ func send(c *cli.Context) (err error) {
 	if crocOptions.OnlyLocal && crocOptions.Transport != croc.TransportAuto {
 		return errors.New("--transport must be auto for local-only transfers")
 	}
-	if crocOptions.ShowQrCode && crocOptions.Transport == croc.TransportDERP {
-		return errors.New("--transport derp cannot be combined with --qrcode")
+	if crocOptions.ShowQrCode && (crocOptions.Transport == croc.TransportDERP || crocOptions.Transport == croc.TransportDirect) {
+		return fmt.Errorf("--transport %s cannot be combined with --qrcode", crocOptions.Transport)
 	}
 	writeTailcatRelayFallbackWarning(os.Stderr, crocOptions.Quiet, downgradedTransport)
 	publicRelayMode := usesPublicRelay(c, crocOptions)

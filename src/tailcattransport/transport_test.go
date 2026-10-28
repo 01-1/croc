@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/schollz/croc/v11/internal/tailcat"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tailcfg"
+	"tailscale.com/types/key"
 )
 
 func TestConfigValidation(t *testing.T) {
@@ -188,5 +190,33 @@ func TestExpectedCloseRecognition(t *testing.T) {
 	}
 	if IsExpectedClose(errors.New("checksum mismatch")) {
 		t.Fatal("unexpected error recognized as a clean close")
+	}
+}
+
+func TestBundleDirectPathRequiresUDPOnlyPeers(t *testing.T) {
+	peer := func(ps ipnstate.PeerStatus) *ipnstate.Status {
+		return &ipnstate.Status{Peer: map[key.NodePublic]*ipnstate.PeerStatus{key.NewNode().Public(): &ps}}
+	}
+	tests := []struct {
+		name   string
+		status *ipnstate.Status
+		want   bool
+	}{
+		{name: "no status", status: nil},
+		{name: "no peers", status: &ipnstate.Status{}},
+		{name: "DERP only", status: peer(ipnstate.PeerStatus{Relay: "derp-1"})},
+		{name: "peer relay", status: peer(ipnstate.PeerStatus{Relay: "derp-1", PeerRelay: "192.0.2.1:3478:vni:7"})},
+		{name: "direct", status: peer(ipnstate.PeerStatus{Relay: "derp-1", CurAddr: "192.0.2.1:41641"}), want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bundle := &Bundle{peerStatus: func() *ipnstate.Status { return test.status }}
+			if got := bundle.DirectPath(); got != test.want {
+				t.Fatalf("DirectPath() = %t; want %t", got, test.want)
+			}
+		})
+	}
+	if (&Bundle{}).DirectPath() {
+		t.Fatal("bundle without peer status reported a direct path")
 	}
 }

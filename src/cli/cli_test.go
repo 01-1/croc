@@ -530,7 +530,17 @@ func TestTransportRejectsInvalidValuesAndIncompatibleCLIOptions(t *testing.T) {
 		{
 			name: "invalid",
 			args: []string{"croc", "--ignore-stdin", "send", "--transport", "magic", "--text", "hello"},
-			want: `invalid transport "magic" (choose auto, derp, or relay)`,
+			want: `invalid transport "magic" (choose auto, derp, direct, or relay)`,
+		},
+		{
+			name: "local direct",
+			args: []string{"croc", "--local", "--ignore-stdin", "send", "--transport", "direct", "--text", "hello"},
+			want: "--transport must be auto for local-only transfers",
+		},
+		{
+			name: "stored direct",
+			args: []string{"croc", "--ignore-stdin", "send", "--transport", "direct", "--store", "unused"},
+			want: "--transport must be auto for stored transfers",
 		},
 		{
 			name: "local derp",
@@ -560,6 +570,10 @@ func TestTransportRejectsInvalidValuesAndIncompatibleCLIOptions(t *testing.T) {
 			name: "qrcode",
 			args: []string{"croc", "--ignore-stdin", "send", "--transport", "derp", "--qrcode", "unused"},
 			want: "--transport derp cannot be combined with --qrcode",
+		}, transportErrorTest{
+			name: "qrcode direct",
+			args: []string{"croc", "--ignore-stdin", "send", "--transport", "direct", "--qrcode", "unused"},
+			want: "--transport direct cannot be combined with --qrcode",
 		})
 	}
 	for _, test := range tests {

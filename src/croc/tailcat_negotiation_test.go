@@ -184,15 +184,23 @@ func TestResolveTransportModeForAvailability(t *testing.T) {
 		{name: "unavailable relay", mode: TransportRelay, want: TransportRelay},
 		{name: "available derp", mode: TransportDERP, available: true, want: TransportDERP},
 		{name: "unavailable derp", mode: TransportDERP, want: TransportRelay, downgraded: true},
+		{name: "available direct", mode: TransportDirect, available: true, want: TransportDirect},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, downgraded := resolveTransportMode(test.mode, test.available)
-			if got != test.want || downgraded != test.downgraded {
-				t.Fatalf("resolveTransportMode(%q, %t) = (%q, %t); want (%q, %t)", test.mode, test.available, got, downgraded, test.want, test.downgraded)
+			got, downgraded, err := resolveTransportMode(test.mode, test.available)
+			if err != nil || got != test.want || downgraded != test.downgraded {
+				t.Fatalf("resolveTransportMode(%q, %t) = (%q, %t, %v); want (%q, %t, nil)", test.mode, test.available, got, downgraded, err, test.want, test.downgraded)
 			}
 		})
+	}
+}
+
+func TestUnavailableTailcatRejectsDirectTransport(t *testing.T) {
+	got, downgraded, err := resolveTransportMode(TransportDirect, false)
+	if !errors.Is(err, errDirectUnavailable) || got != "" || downgraded {
+		t.Fatalf("resolveTransportMode(direct, false) = (%q, %t, %v); want rejection", got, downgraded, err)
 	}
 }
 
