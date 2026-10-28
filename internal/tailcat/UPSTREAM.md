@@ -33,6 +33,11 @@ wire protocol.
   and adds `Server.RemoveAllowedClient` so one-time client keys can be revoked.
 - `croc_status.go`: adds a client status accessor for direct/DERP path
   transitions and final byte reporting.
+- `croc_portmapper.go`: links Tailscale's NAT-PMP/PCP/UPnP port mapper, which
+  magicsock only uses when `feature/portmapper` registers its hook. Upstream
+  Tailcat does not link it, so mapped endpoints were never advertised.
+  `src/tailcattransport/portmapper_test.go` guards the registration, because
+  this package's own tests link the portmapper through test-only imports.
 - `tailcat.go`, `pickregion.go`, `pickregion_js.go`, `wire.go`: backport the
   DERP region ID migration from upstream commit
   [`93727442357477eed62e939327dff26c648aabd1`](https://github.com/tailscale/tailcat/commit/93727442357477eed62e939327dff26c648aabd1).
