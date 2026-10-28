@@ -175,7 +175,7 @@ func TestDirectPathGuardFailsWhenPathIsLost(t *testing.T) {
 	}()
 
 	client.directPathGraceOverride = 20 * time.Millisecond
-	client.markTransferStarted()
+	client.sendingFileData.Store(true)
 	client.guardDirectPath(bundle.bundle, attempt)
 	defer bundle.bundle.Close()
 	bundle.path.Store("derp")
@@ -197,7 +197,7 @@ func TestDirectPathGuardIgnoresPathAfterTransferCompletes(t *testing.T) {
 	defer bundle.peer.Close()
 	client, _, attempt := newDirectTestSender(t, bytes.Repeat([]byte{0x54}, 32), bundle)
 	client.directPathGraceOverride = 10 * time.Millisecond
-	client.markTransferStarted()
+	client.sendingFileData.Store(true)
 	client.tailcat.terminal.Store(true)
 	client.guardDirectPath(bundle.bundle, attempt)
 	bundle.path.Store("derp")
@@ -258,6 +258,25 @@ func TestDirectPathGuardIgnoresIdlePathBeforeTransferStarts(t *testing.T) {
 	select {
 	case err := <-attempt.errc:
 		t.Fatalf("guard reported %v before file data started", err)
+	default:
+	}
+}
+
+func TestDirectPathGuardIgnoresSenderApprovalPrompt(t *testing.T) {
+	bundle := newDirectTestBundle(1, "direct")
+	defer bundle.peer.Close()
+	client, _, attempt := newDirectTestSender(t, bytes.Repeat([]byte{0x56}, 32), bundle)
+	client.directPathGraceOverride = 10 * time.Millisecond
+	// The receiver has requested a file, but --ask is still waiting for the
+	// sender's approval, so no file data flows yet.
+	client.markTransferStarted()
+	client.guardDirectPath(bundle.bundle, attempt)
+	bundle.path.Store("derp")
+	time.Sleep(100 * time.Millisecond)
+	_ = bundle.bundle.Close()
+	select {
+	case err := <-attempt.errc:
+		t.Fatalf("guard reported %v while the sender was still approving the transfer", err)
 	default:
 	}
 }

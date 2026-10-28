@@ -82,11 +82,11 @@ func (c *Client) sendPeerError(err error) {
 
 // guardDirectPath fails the transfer if the direct path is lost while file
 // data is flowing. DERP is already disabled, so packets are dropped rather than
-// relayed; the guard turns that stall into a prompt, explicit error. Idle time
-// before the transfer starts (such as the receiver's accept prompt) is ignored
-// because magicsock stops confirming paths that carry no traffic. It must be
-// called before the bundle is installed so its stop hook is part of the
-// bundle's cleanup.
+// relayed; the guard turns that stall into a prompt, explicit error. It only
+// checks while the sender streams an approved file, because magicsock stops
+// confirming paths that carry no traffic, for example during the receiver's
+// accept prompt or the sender's --ask prompt. It must be called before the
+// bundle is installed so its stop hook is part of the bundle's cleanup.
 func (c *Client) guardDirectPath(bundle *tailcatDataBundle, attempt *transferAttemptState) {
 	done := make(chan struct{})
 	bundle.addCleanup(func() { close(done) })
@@ -97,7 +97,7 @@ func (c *Client) guardDirectPath(bundle *tailcatDataBundle, attempt *transferAtt
 		for {
 			select {
 			case <-ticker.C:
-				if !c.activeTransferStarted() || c.tailcat.terminal.Load() || bundle.directPath() {
+				if !c.sendingFileData.Load() || c.tailcat.terminal.Load() || bundle.directPath() {
 					lostSince = time.Time{}
 					continue
 				}
