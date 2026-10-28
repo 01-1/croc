@@ -458,6 +458,18 @@ nothing can fall back to a relay. If no direct path appears within the setup
 window, or the path is lost during the transfer, croc stops with an error
 instead of relaying. The code-phrase handshake and control messages still use
 the croc relay. Browser receivers cannot use it.
+
+Before that, a `--transport direct` sender tries to host the meeting point
+itself. It asks the router to forward its local relay's TCP ports (PCP,
+NAT-PMP, or UPnP), or uses a global IPv6 address, and appends that address to
+the code it shows, for example `bacon-pickle-trout@word-word-word`. A receiver
+given such a code connects straight to the sender, with no public relay, DERP,
+or STUN involved. Mappings are renewed during the transfer and removed when
+croc exits, and they are only used when the router's own external address is
+public, so double NAT and carrier-grade NAT fall back to a plain code. A
+receiver that cannot reach the address falls back to the public relay and the
+direct Tailcat path. Anyone who sees the longer code learns the sender's public
+IP address.
 Public DERP is best effort and may apply fairness limits; see Tailscale's
 [DERP reference](https://tailscale.com/docs/reference/derp-servers) and
 [performance guidance](https://tailscale.com/docs/reference/troubleshooting/poor-performance-tailnet).

@@ -9,6 +9,7 @@ require (
 	github.com/denisbrodbeck/machineid v1.0.1
 	github.com/fxamacker/cbor/v2 v2.9.6
 	github.com/google/go-cmp v0.7.0
+	github.com/huin/goupnp v1.3.0
 	github.com/kalafut/imohash v1.1.1
 	github.com/magisterquis/connectproxy v0.0.0-20200725203833-3582e84f0c9b
 	github.com/mattn/go-colorable v0.1.16
@@ -78,7 +79,6 @@ require (
 	github.com/google/nftables v0.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
-	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/illarion/gonotify/v3 v3.0.2 // indirect
 	github.com/insomniacslk/dhcp v0.0.0-20260901064844-234b97448fae // indirect
 	github.com/jellydator/ttlcache/v3 v3.4.1 // indirect
