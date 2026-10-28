@@ -320,10 +320,14 @@ type Client struct {
 	stagedRelayDelayOverride time.Duration
 	stagedSelectionOverride  time.Duration
 	directPathPollOverride   time.Duration
-	directPathGraceOverride  time.Duration
-	senderRouteWaitOverride  time.Duration
-	localIPLookup            func() ([]string, error)
-	relayDataOpen            func(*transferAttemptState, []int, bool) error
+	// sendingFileData is set while the sender streams an approved file, so
+	// the --transport direct guard ignores idle time such as the --ask
+	// prompt.
+	sendingFileData         atomic.Bool
+	directPathGraceOverride time.Duration
+	senderRouteWaitOverride time.Duration
+	localIPLookup           func() ([]string, error)
+	relayDataOpen           func(*transferAttemptState, []int, bool) error
 
 	// ctx.go for graceful shutdown
 	*stop
@@ -3036,6 +3040,7 @@ func (c *Client) processMessage(payload []byte, attempt *transferAttemptState) (
 		log.Debugf("current file has %d requested chunks", c.CurrentFileChunkCount)
 		c.updateLifecycle(func(state *transferLifecycle) { state.RecipientRequested = true })
 		c.markTransferStarted()
+		c.sendingFileData.Store(false)
 
 		if c.Options.Ask {
 			output, colorEnabled := termui.Output(os.Stderr)
@@ -3059,7 +3064,9 @@ func (c *Client) processMessage(payload []byte, attempt *transferAttemptState) (
 				return
 			}
 		}
+		c.sendingFileData.Store(true)
 	case message.TypeCloseSender:
+		c.sendingFileData.Store(false)
 		c.finishProgress()
 		log.Debug("close-sender received...")
 		c.updateLifecycle(func(state *transferLifecycle) {
