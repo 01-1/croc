@@ -31,6 +31,10 @@ const maxReadMessageSize = 64 * 1024 * 1024
 // limit accepted by croc peers.
 var ErrMessageTooLarge = errors.New("message too large")
 
+// ErrPartialFrame indicates that a frame started arriving but did not finish,
+// so the connection no longer starts at a frame boundary.
+var ErrPartialFrame = errors.New("framed message interrupted")
+
 // Large resume requests can contain hundreds of thousands of missing chunk
 // ranges. Keep the guard against malformed streams, but give legitimate large
 // control messages enough time to arrive through a relay.
@@ -240,6 +244,14 @@ func (c *Comm) readWithDeadline(readDeadline time.Time) (buf []byte, numBytes in
 }
 
 func (c *Comm) readWithDeadlineInto(dst []byte, readDeadline time.Time, maxMessageSize int) (buf []byte, numBytes int, bs []byte, err error) {
+	return c.readFrame(dst, readDeadline, maxMessageSize, false)
+}
+
+// readFrame reads one framed message. With finishStarted, readDeadline only
+// bounds the wait for the frame's first byte: a frame that has started
+// arriving is read to its end within messageBodyReadTimeout, so a timeout
+// never leaves part of a frame consumed.
+func (c *Comm) readFrame(dst []byte, readDeadline time.Time, maxMessageSize int, finishStarted bool) (buf []byte, numBytes int, bs []byte, err error) {
 	if maxMessageSize < 0 || uint64(maxMessageSize) > uint64(^uint32(0)) {
 		return nil, 0, nil, fmt.Errorf("invalid maximum message size %d", maxMessageSize)
 	}
@@ -256,7 +268,17 @@ func (c *Comm) readWithDeadlineInto(dst []byte, readDeadline time.Time, maxMessa
 	}
 
 	var header [8]byte
-	_, err = io.ReadFull(c.connection, header[:])
+	headerBytes, err := io.ReadFull(c.connection, header[:])
+	if err != nil && finishStarted && headerBytes > 0 && isTimeout(err) {
+		if err = c.connection.SetReadDeadline(time.Now().Add(messageBodyReadTimeout)); err != nil {
+			err = fmt.Errorf("error setting message header read deadline: %w", err)
+			return
+		}
+		if _, err = io.ReadFull(c.connection, header[headerBytes:]); err != nil {
+			err = fmt.Errorf("%w after %d header bytes: %v", ErrPartialFrame, headerBytes, err)
+			return
+		}
+	}
 	if err != nil {
 		log.Debugf("initial read error: %v", err)
 		return
@@ -277,7 +299,7 @@ func (c *Comm) readWithDeadlineInto(dst []byte, readDeadline time.Time, maxMessa
 	// Shorten the reading deadline in case getting weird data, while still
 	// allowing large resume-control messages to cross slower relays.
 	bodyReadDeadline := time.Now().Add(messageBodyReadTimeout)
-	if !readDeadline.IsZero() && readDeadline.Before(bodyReadDeadline) {
+	if !finishStarted && !readDeadline.IsZero() && readDeadline.Before(bodyReadDeadline) {
 		bodyReadDeadline = readDeadline
 	}
 	if err = c.connection.SetReadDeadline(bodyReadDeadline); err != nil {
@@ -292,9 +314,17 @@ func (c *Comm) readWithDeadlineInto(dst []byte, readDeadline time.Time, maxMessa
 	_, err = io.ReadFull(c.connection, buf)
 	if err != nil {
 		log.Debugf("consecutive read error: %v", err)
+		if finishStarted {
+			err = fmt.Errorf("%w in its body: %v", ErrPartialFrame, err)
+		}
 		return
 	}
 	return
+}
+
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // Send a message
@@ -320,6 +350,16 @@ func (c *Comm) ReceiveInto(dst []byte) (b []byte, err error) {
 // of the read to extend beyond the supplied absolute deadline.
 func (c *Comm) ReceiveWithDeadline(deadline time.Time) (b []byte, err error) {
 	b, _, _, err = c.readWithDeadline(deadline)
+	return
+}
+
+// ReceiveStartedBefore receives one framed message that starts arriving before
+// deadline. A frame that has started is read to its end, so after a timeout
+// the connection is still at a frame boundary and the frame can arrive in a
+// later read. If a started frame cannot finish, the error wraps
+// ErrPartialFrame and the connection must not be reused.
+func (c *Comm) ReceiveStartedBefore(deadline time.Time) (b []byte, err error) {
+	b, _, _, err = c.readFrame(nil, deadline, maxReadMessageSize, true)
 	return
 }
 

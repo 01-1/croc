@@ -9,7 +9,10 @@ export type MessageType =
   | "close-recipient"
   | "close-sender"
   | "recipientready"
-  | "fileinfo";
+  | "fileinfo"
+  | "webrtc-offer"
+  | "webrtc-answer"
+  | "transport-select";
 
 export interface CrocMessage {
   t: MessageType;
@@ -95,6 +98,9 @@ export interface TransferSettings {
   relayAddresses: string[];
   relayPassword: string;
   storeAPI: string;
+  // STUN servers for browser WebRTC; undefined uses DEFAULT_STUN_SERVERS and
+  // an empty list disables STUN.
+  stunServers?: string[];
 }
 
 export interface FileProgress {

@@ -10,6 +10,17 @@ import {
 } from "./bytes";
 import { CrocSocket } from "./transport";
 import {
+  answerWebRTC,
+  DEFAULT_STUN_SERVERS,
+  offerWebRTC,
+  TRANSPORT_RELAY,
+  TRANSPORT_WEBRTC,
+  WEBRTC_FEATURE,
+  webrtcSupported,
+  type DataSocket,
+  type WebRTCAnswer,
+} from "./webrtc";
+import {
   connectRelay,
   controlPort,
   isRelayConnectionError,
@@ -193,7 +204,101 @@ async function openDataConnections(
   return connected.map(({ socket }) => socket);
 }
 
-function closeAll(control?: CrocSocket, data: CrocSocket[] = []) {
+function localFeatures() {
+  return webrtcSupported() ? [WEBRTC_FEATURE] : [];
+}
+
+function webrtcNegotiated(peerFeatures?: string[]) {
+  return webrtcSupported() && (peerFeatures ?? []).includes(WEBRTC_FEATURE);
+}
+
+function stunServers(settings: TransferSettings) {
+  return settings.stunServers ?? DEFAULT_STUN_SERVERS;
+}
+
+// openSenderData chooses the sender's data streams. With a WebRTC-capable
+// peer it always ends negotiation with a transport selection, trying a
+// direct connection first.
+async function openSenderData(
+  control: CrocSocket,
+  key: Uint8Array,
+  peerFeatures: string[] | undefined,
+  settings: TransferSettings,
+  room: string,
+  banner: string,
+  relayIndex: number,
+  signal: AbortSignal | undefined,
+  onStatus?: (status: string) => void,
+): Promise<DataSocket[]> {
+  if (webrtcNegotiated(peerFeatures)) {
+    onStatus?.("Connecting directly…");
+    const sockets = await offerWebRTC(control, key, stunServers(settings), signal);
+    try {
+      await sendControl(
+        control,
+        { t: "transport-select", m: sockets ? TRANSPORT_WEBRTC : TRANSPORT_RELAY },
+        key,
+      );
+    } catch (error) {
+      for (const socket of sockets ?? []) socket.close();
+      throw error;
+    }
+    if (sockets) return sockets;
+    onStatus?.("Opening encrypted data channels…");
+  }
+  return openDataConnections(settings, room, dataPorts(banner), relayIndex, signal);
+}
+
+// openReceiverData follows the sender's choice: it answers a WebRTC offer if
+// one arrives, then waits for the sender's transport selection.
+export async function openReceiverData(
+  control: CrocSocket,
+  key: Uint8Array,
+  peerFeatures: string[] | undefined,
+  settings: TransferSettings,
+  room: string,
+  banner: string,
+  relayIndex: number,
+  signal: AbortSignal | undefined,
+): Promise<DataSocket[]> {
+  if (webrtcNegotiated(peerFeatures)) {
+    let offered = false;
+    let answered: WebRTCAnswer | undefined;
+    // The transfer's cleanup only sees data sockets, so an answered
+    // connection must be closed here on every exit that does not return it.
+    try {
+      for (;;) {
+        checkAbort(signal);
+        const message = await receiveControl(control, key);
+        if (message.t === "webrtc-offer") {
+          if (offered) throw new Error("Sender sent a second WebRTC offer");
+          offered = true;
+          answered = await answerWebRTC(control, key, message, stunServers(settings), signal);
+          continue;
+        }
+        if (message.t === "error") throw new Error(message.m || "Sender cancelled");
+        if (message.t !== "transport-select") {
+          throw new Error(`Expected a transport selection, got ${message.t}`);
+        }
+        if (message.m === TRANSPORT_WEBRTC) {
+          if (!answered) throw new Error("Sender selected WebRTC without an answered offer");
+          return await answered.wait(signal);
+        }
+        if (message.m !== TRANSPORT_RELAY) {
+          throw new Error(`Sender selected an unknown transport: ${message.m}`);
+        }
+        answered?.close();
+        break;
+      }
+    } catch (error) {
+      answered?.close();
+      throw error;
+    }
+  }
+  return openDataConnections(settings, room, dataPorts(banner), relayIndex, signal);
+}
+
+function closeAll(control?: CrocSocket, data: DataSocket[] = []) {
   control?.close();
   for (const socket of data) socket.close();
 }
@@ -329,7 +434,7 @@ function requestedOffset(offset: number, ranges: number[] | null | undefined) {
 async function sendFileData(
   prepared: PreparedFile,
   ranges: number[] | null,
-  sockets: CrocSocket[],
+  sockets: DataSocket[],
   cipherHandle: number,
   compressed: boolean,
   progress: (bytes: number) => void,
@@ -397,7 +502,7 @@ export async function sendFiles(options: {
     settings.relayAddresses.length,
   );
   let control: CrocSocket | undefined;
-  let data: CrocSocket[] = [];
+  let data: DataSocket[] = [];
   let key: Uint8Array | undefined;
   let cipherHandle: number | undefined;
   let pakeHandle: number | undefined;
@@ -445,6 +550,7 @@ export async function sendFiles(options: {
       v: PAKE_PROTOCOL_VERSION,
       b: finished.bytes,
       b2: salt,
+      f: localFeatures(),
     });
     const confirmationA = await receiveControl(control);
     if (confirmationA.t !== "pake-confirm" || !confirmationA.b) {
@@ -465,12 +571,16 @@ export async function sendFiles(options: {
     cipherHandle = await engine.cipherInit(key);
 
     callbacks.onStatus?.("Opening encrypted data channels…");
-    data = await openDataConnections(
+    data = await openSenderData(
+      control,
+      key,
+      peerPake.f,
       settings,
       room,
-      dataPorts(relay.banner),
+      relay.banner,
       relayIndex,
       signal,
+      callbacks.onStatus,
     );
 
     const peerIP = await receiveControl(control, key);
@@ -588,7 +698,7 @@ export class DataReceiver {
   private failure?: Error;
 
   constructor(
-    private sockets: CrocSocket[],
+    private sockets: DataSocket[],
     private key: Uint8Array,
     private noCompress: boolean,
     private cipherHandle?: number,
@@ -624,7 +734,7 @@ export class DataReceiver {
     this.fail(new Error("Data receiver stopped"));
   }
 
-  private async read(socket: CrocSocket) {
+  private async read(socket: DataSocket) {
     const engine = protocolEngine();
     while (!this.stopped) {
       try {
@@ -731,7 +841,7 @@ export async function receiveFiles(options: {
     settings.relayAddresses.length,
   );
   let control: CrocSocket | undefined;
-  let data: CrocSocket[] = [];
+  let data: DataSocket[] = [];
   let key: Uint8Array | undefined;
   let cipherHandle: number | undefined;
   let pakeHandle: number | undefined;
@@ -765,6 +875,7 @@ export async function receiveFiles(options: {
       v: PAKE_PROTOCOL_VERSION,
       b: pake.bytes,
       b2: textEncoder.encode(curve),
+      f: localFeatures(),
     });
     const peerPake = await receiveControl(control);
     if (peerPake.t !== "pake" || !peerPake.b || !peerPake.b2) {
@@ -804,10 +915,13 @@ export async function receiveFiles(options: {
     key = peerKeys.key;
     cipherHandle = await engine.cipherInit(key);
     callbacks.onStatus?.("Opening transfer channels…");
-    data = await openDataConnections(
+    data = await openReceiverData(
+      control,
+      key,
+      peerPake.f,
       settings,
       room,
-      dataPorts(relay.banner),
+      relay.banner,
       relayIndex,
       signal,
     );

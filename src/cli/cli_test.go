@@ -1210,6 +1210,44 @@ func TestApplyRememberedSendOptionsTransport(t *testing.T) {
 	}
 }
 
+func TestSTUNServersFlag(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		env  string
+		want []string
+	}{
+		{name: "unset uses defaults", args: []string{"croc", "send"}},
+		{name: "list", args: []string{"croc", "--stun", "stun:a.example:3478, stun:b.example:3478", "send"}, want: []string{"stun:a.example:3478", "stun:b.example:3478"}},
+		{name: "none disables", args: []string{"croc", "--stun", "none", "send"}, want: []string{}},
+		{name: "environment", args: []string{"croc", "send"}, env: "none", want: []string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.env != "" {
+				t.Setenv("CROC_STUN", test.env)
+			}
+			app := newApp()
+			for _, command := range app.Commands {
+				if command.Name != "send" {
+					continue
+				}
+				command.Action = func(ctx *cli.Context) error {
+					got := stunServers(ctx)
+					if (got == nil) != (test.want == nil) || !reflect.DeepEqual(append([]string{}, got...), append([]string{}, test.want...)) {
+						t.Fatalf("stunServers = %#v, want %#v", got, test.want)
+					}
+					return nil
+				}
+				if err := app.Run(test.args); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			t.Fatal("send command not found")
+		})
+	}
+}
+
 func TestWriteTailcatRelayFallbackWarning(t *testing.T) {
 	for _, test := range []struct {
 		name       string

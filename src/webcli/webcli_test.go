@@ -313,3 +313,15 @@ func TestDeterminePassReadsFilesAndTrims(t *testing.T) {
 		t.Fatalf("password = %q, want secret", actual)
 	}
 }
+
+func TestParseSTUNServers(t *testing.T) {
+	if got := parseSTUNServers(defaultSTUNServers); len(got) != 2 || got[0] != "stun:stun.l.google.com:19302" {
+		t.Fatalf("default STUN servers = %v", got)
+	}
+	if got := parseSTUNServers(" stun:a.example:3478 , ,stun:b.example:3478 "); len(got) != 2 || got[1] != "stun:b.example:3478" {
+		t.Fatalf("parsed STUN servers = %v", got)
+	}
+	if got := parseSTUNServers(""); got == nil || len(got) != 0 {
+		t.Fatalf("empty --stun = %#v; want an empty, non-nil list that disables STUN", got)
+	}
+}
