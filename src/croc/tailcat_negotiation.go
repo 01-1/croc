@@ -204,12 +204,22 @@ func (c *Client) activateSecureChannel(attempt *transferAttemptState) (err error
 		c.watchTailcatSelection(attempt)
 		return nil
 	}
+	if c.webrtcNegotiated() {
+		if c.Options.IsSender {
+			return c.activateWebRTCSender(attempt)
+		}
+		c.waitForWebRTCSelection(attempt)
+		return nil
+	}
 	log.Debug("selected croc relay data transport")
 	return c.activateRelayDataChannels(attempt)
 }
 
 func (c *Client) pakeFeatures() []string {
 	features := []string{inlinePeerMetadataFeature, progressiveFileHashFeature, chunkedFileInfoFeature, stagedTransportFeature, implicitTailcatReadyFeature}
+	if c.localWebRTCSupported() {
+		features = append(features, webrtcFeature)
+	}
 	if !c.localTailcatSupported() {
 		return features
 	}

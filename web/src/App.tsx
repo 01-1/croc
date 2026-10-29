@@ -271,6 +271,7 @@ const defaultSettings: TransferSettings = {
     import.meta.env.VITE_CROC_RELAY_PASSWORD ||
     "pass123",
   storeAPI: "/api/v1/store",
+  stunServers: runtimeSettings.stunServers,
 };
 
 function storedValue(key: string, fallback: string) {
@@ -673,6 +674,7 @@ export function App() {
       defaultSettings.relayPassword,
     ),
     storeAPI: defaultSettings.storeAPI,
+    stunServers: defaultSettings.stunServers,
   }));
   const [rememberPassword, setRememberPassword] = useState(() => {
     try {

@@ -141,6 +141,9 @@ await waitForTCP(controlPort);
 start("server", webBinaryPath, [
   "--pass",
   "pass123",
+  // Browsers use host candidates only, so transfers never contact public STUN.
+  "--stun",
+  "",
   "--relays",
   "127.0.0.1",
   "--ports",

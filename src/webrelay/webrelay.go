@@ -46,6 +46,10 @@ type Config struct {
 	DialTimeout    time.Duration
 	PublicAddress  string
 	RelayPassword  string
+	// STUNServers are given to browsers for WebRTC. Nil keeps the browser's
+	// default list; an empty, non-nil list disables STUN, leaving only direct
+	// LAN candidates.
+	STUNServers    []string
 	StaticFiles    fs.FS
 	StoreService   *store.Service
 	UmamiURL       string
@@ -69,6 +73,7 @@ type runtimeConfig struct {
 	GatewayURL     string             `json:"gatewayURL"`
 	RelayAddresses []string           `json:"relayAddresses"`
 	RelayPassword  string             `json:"relayPassword"`
+	STUNServers    *[]string          `json:"stunServers,omitempty"`
 	Store          store.PublicConfig `json:"store"`
 }
 
@@ -105,6 +110,13 @@ func Handler(config Config) (http.Handler, error) {
 				return addresses
 			}(),
 			RelayPassword: normalized.RelayPassword,
+			STUNServers: func() *[]string {
+				if normalized.STUNServers == nil {
+					return nil
+				}
+				servers := append([]string{}, normalized.STUNServers...)
+				return &servers
+			}(),
 			Store: func() store.PublicConfig {
 				if normalized.StoreService == nil {
 					return store.PublicConfig{}

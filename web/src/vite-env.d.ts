@@ -22,6 +22,7 @@ interface Window {
     gatewayURL?: string;
     relayAddresses?: string[];
     relayPassword?: string;
+    stunServers?: string[];
     store?: {
       enabled?: boolean;
       maxTransferBytes?: number;

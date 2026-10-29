@@ -212,6 +212,7 @@ func newApp() *cli.App {
 		&cli.StringFlag{Name: "curve", Value: "p256", Usage: "choose an encryption curve (" + strings.Join(pake.AvailableCurves(), ", ") + ")"},
 		&cli.StringFlag{Name: "ip", Value: "", Usage: "set sender ip if known e.g. 10.0.0.1:9009, [::1]:9009"},
 		&cli.StringFlag{Name: "relay", Value: models.DEFAULT_RELAY, Usage: "address of the relay", EnvVars: []string{"CROC_RELAY"}},
+		&cli.StringFlag{Name: "stun", Usage: "comma-separated STUN servers for direct WebRTC transfers with browsers, or none", EnvVars: []string{"CROC_STUN"}},
 		&cli.StringFlag{Name: "relay6", Value: models.DEFAULT_RELAY6, Usage: "ipv6 address of the relay", EnvVars: []string{"CROC_RELAY6"}},
 		&cli.StringFlag{Name: "out", Value: ".", Usage: "specify an output folder to receive the file"},
 		&cli.StringFlag{Name: "pass", Value: models.DEFAULT_PASSPHRASE, Usage: "password for the relay", EnvVars: []string{"CROC_PASS"}},
@@ -649,6 +650,7 @@ func send(c *cli.Context) (err error) {
 	crocOptions := croc.Options{
 		SharedSecret:      c.String("code"),
 		IsSender:          true,
+		STUNServers:       stunServers(c),
 		Debug:             c.Bool("debug"),
 		NoPrompt:          c.Bool("yes"),
 		RelayAddress:      c.String("relay"),
@@ -982,6 +984,7 @@ func receive(c *cli.Context) (err error) {
 	crocOptions := croc.Options{
 		SharedSecret:      c.String("code"),
 		IsSender:          false,
+		STUNServers:       stunServers(c),
 		Debug:             c.Bool("debug"),
 		NoPrompt:          c.Bool("yes"),
 		RelayAddress:      c.String("relay"),
@@ -1290,4 +1293,19 @@ func relay(c *cli.Context) (err error) {
 		tcp.WithRoomPairedCallback(roomPaired),
 		tcp.WithRoomProtocolCallback(roomProtocol),
 	)
+}
+
+// stunServers returns the --stun servers, or nil to use croc's defaults.
+// "none" disables STUN.
+func stunServers(c *cli.Context) []string {
+	if !c.IsSet("stun") {
+		return nil
+	}
+	servers := []string{}
+	for server := range strings.SplitSeq(c.String("stun"), ",") {
+		if server = strings.TrimSpace(server); server != "" && !strings.EqualFold(server, "none") {
+			servers = append(servers, server)
+		}
+	}
+	return servers
 }

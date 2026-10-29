@@ -130,6 +130,10 @@ type Options struct {
 	DisableClipboard  bool
 	ExtendedClipboard bool
 	Transport         TransportMode `json:",omitempty"`
+	// STUNServers are used for direct WebRTC transfers with browser peers.
+	// Nil uses webrtctransport.DefaultSTUNServers; an empty, non-nil list
+	// disables STUN, leaving only direct LAN candidates.
+	STUNServers []string `json:"-"`
 }
 
 // TransportMode controls how a sender selects the file-data connection after
@@ -224,29 +228,34 @@ type Client struct {
 	dataAEAD               cipher.AEAD
 
 	// tcp connections
-	connectionsMu              sync.RWMutex
-	conn                       []*comm.Comm
-	baseRoomName               string
-	pakePassphrase             string
-	pakeInitiator              []byte
-	pakeResponder              []byte
-	pakeCurve                  string
-	pakeKeys                   pakekey.Keys
-	pakeConfirmationPending    bool
-	nextReconnectRoom          string
-	relayControlAddress        string
-	relayCapability            string
-	relayControlPeerToPeer     bool
-	reconnectRelayAddresses    []string
-	reconnectRelayMu           sync.Mutex
-	reconnectVersion           int
-	peerReconnectVersion       int
-	peerPerFileCompression     bool
-	peerInlineMetadata         bool
-	peerProgressiveHash        bool
-	peerChunkedFileInfo        bool
-	peerStagedTransport        bool
-	peerImplicitTailcatReady   bool
+	connectionsMu            sync.RWMutex
+	conn                     []*comm.Comm
+	baseRoomName             string
+	pakePassphrase           string
+	pakeInitiator            []byte
+	pakeResponder            []byte
+	pakeCurve                string
+	pakeKeys                 pakekey.Keys
+	pakeConfirmationPending  bool
+	nextReconnectRoom        string
+	relayControlAddress      string
+	relayCapability          string
+	relayControlPeerToPeer   bool
+	reconnectRelayAddresses  []string
+	reconnectRelayMu         sync.Mutex
+	reconnectVersion         int
+	peerReconnectVersion     int
+	peerPerFileCompression   bool
+	peerInlineMetadata       bool
+	peerProgressiveHash      bool
+	peerChunkedFileInfo      bool
+	peerStagedTransport      bool
+	peerImplicitTailcatReady bool
+	webrtc                   webrtcState
+	// disableWebRTC stops this client from advertising WebRTC.
+	disableWebRTC bool
+	// webrtcAnySize lets tests attempt WebRTC below auto mode's threshold.
+	webrtcAnySize              bool
 	incomingFileManifest       *incomingFileManifest
 	tailcat                    tailcatClientState
 	transportSelectionReceived bool
@@ -770,6 +779,7 @@ func (c *Client) resetForReconnectAttempt(attempt int) error {
 	c.peerChunkedFileInfo = false
 	c.peerStagedTransport = false
 	c.peerImplicitTailcatReady = false
+	c.webrtc.reset()
 	c.clearIncomingFileManifest()
 	c.tailcat.peerCapable = false
 	c.tailcat.peerRequired = false
@@ -1761,6 +1771,7 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 	go c.stop.done()
 	defer c.stop.Cancel()
 	defer c.closeTailcatBundle()
+	defer c.webrtc.closePending()
 	c.EmptyFoldersToTransfer = emptyFoldersToTransfer
 	c.TotalNumberFolders = totalNumberFolders
 	c.TotalNumberOfContents = len(filesInfo)
@@ -1991,6 +2002,7 @@ func (c *Client) Receive() (err error) {
 	go c.stop.done()
 	defer c.stop.Cancel()
 	defer c.closeTailcatBundle()
+	defer c.webrtc.closePending()
 	defer c.clearReceiveStatus()
 	if _, err = c.receiveFilesystem(); err != nil {
 		return err
@@ -2650,6 +2662,7 @@ func (c *Client) processMessagePake(m message.Message, attempt *transferAttemptS
 	c.peerChunkedFileInfo = supportsFeature(m.Features, chunkedFileInfoFeature)
 	c.peerStagedTransport = supportsFeature(m.Features, stagedTransportFeature)
 	c.peerImplicitTailcatReady = supportsFeature(m.Features, implicitTailcatReadyFeature)
+	c.webrtc.peerCapable = supportsFeature(m.Features, webrtcFeature)
 	if c.pakeConfirmationPending || c.Key != nil {
 		return pakeHandshakeError{err: fmt.Errorf("unexpected duplicate PAKE payload")}
 	}
@@ -2959,10 +2972,16 @@ func (c *Client) processMessage(payload []byte, attempt *transferAttemptState) (
 		}
 	case message.TypeTailcatOffer:
 		err = c.processTailcatOffer(m, attempt)
+	case message.TypeWebRTCOffer:
+		err = c.processWebRTCOffer(m)
 	case message.TypeTailcatStatus:
 		err = c.processUnexpectedTailcatStatus(m)
 	case message.TypeTransportSelect:
-		err = c.processTransportSelect(m, attempt)
+		if c.webrtcNegotiated() {
+			err = c.processWebRTCSelect(m, attempt)
+		} else {
+			err = c.processTransportSelect(m, attempt)
+		}
 	case message.TypeExternalIP:
 		done, err = c.processExternalIP(m)
 	case message.TypeError:

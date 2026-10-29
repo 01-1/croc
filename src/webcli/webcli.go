@@ -51,6 +51,7 @@ func newApp(ctx context.Context) *cli.App {
 		&cli.StringFlag{Name: "relays", Aliases: []string{"relay"}, Value: strings.Join(publicrelay.Relays(), ","), Usage: "ordered comma-separated upstream croc relay hosts"},
 		&cli.StringFlag{Name: "ports", Value: "9009,9010,9011,9012,9013,9014,9015,9016,9017", Usage: "allowed upstream relay ports"},
 		&cli.StringFlag{Name: "pass", Value: models.DEFAULT_PASSPHRASE, Usage: "password for the relay", EnvVars: []string{"CROC_PASS"}},
+		&cli.StringFlag{Name: "stun", Value: defaultSTUNServers, Usage: "comma-separated STUN servers that browsers use for direct WebRTC transfers (empty disables STUN)"},
 		&cli.BoolFlag{Name: "debug", Usage: "enable debug logging"},
 		&cli.StringFlag{Name: "store-dir", Usage: "enable encrypted temporary storage in this directory"},
 		&cli.StringFlag{Name: "store-max-transfer", Value: "1GiB", Usage: "maximum plaintext bytes per stored transfer"},
@@ -154,6 +155,7 @@ func serve(ctx context.Context, c *cli.Context) error {
 		PublicAddress:  origin,
 		RelayHosts:     parseRelayHosts(c.String("relays")),
 		RelayPassword:  determinePass(c.String("pass")),
+		STUNServers:    parseSTUNServers(c.String("stun")),
 		AllowedPorts:   parseRelayPorts(c.String("ports")),
 		OriginPatterns: []string{origin},
 		StaticFiles:    webassets.Files(),
@@ -274,4 +276,18 @@ func resolveServeAddress(publicAddress, bindAddress string, bindExplicit bool) (
 	}
 
 	return bindAddress, publicAddress, nil
+}
+
+// defaultSTUNServers matches webrtctransport.DefaultSTUNServers, repeated here
+// so croc-web does not link pion just for the list.
+const defaultSTUNServers = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"
+
+func parseSTUNServers(value string) []string {
+	servers := []string{}
+	for server := range strings.SplitSeq(value, ",") {
+		if server = strings.TrimSpace(server); server != "" {
+			servers = append(servers, server)
+		}
+	}
+	return servers
 }

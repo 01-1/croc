@@ -2,6 +2,7 @@ package webrelay
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -170,6 +171,36 @@ func TestServesSiteAndRuntimeConfig(t *testing.T) {
 			";\n",
 		),
 	)
+}
+
+func TestRuntimeConfigSTUNServers(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		servers []string
+		want    string
+	}{
+		{name: "custom list", servers: []string{"stun:stun.example.test:3478"}, want: `["stun:stun.example.test:3478"]`},
+		{name: "disabled", servers: []string{}, want: `[]`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			handler, err := Handler(Config{
+				RelayHost:     "relay.example.test",
+				AllowedPorts:  []string{"9109"},
+				RelayPassword: "relay-secret",
+				STUNServers:   testCase.servers,
+				StaticFiles:   testSite(),
+			})
+			require.NoError(t, err)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/config.js", nil))
+			var config struct {
+				STUNServers json.RawMessage `json:"stunServers"`
+			}
+			body := strings.TrimSuffix(strings.TrimPrefix(recorder.Body.String(), "window.__CROC_RUNTIME_CONFIG__ = "), ";\n")
+			require.NoError(t, json.Unmarshal([]byte(body), &config))
+			assert.JSONEq(t, testCase.want, string(config.STUNServers))
+		})
+	}
 }
 
 func TestUmamiScriptRequiresBothEnvironmentValues(t *testing.T) {

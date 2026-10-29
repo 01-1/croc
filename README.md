@@ -447,12 +447,23 @@ PAKE handshake, two compatible native clients create PAKE-bound Tailcat node
 identities and open one or more TCP streams over an in-process Tailscale
 userspace WireGuard network. Magicsock starts through DERP and promotes the
 connection to a direct UDP path whenever NAT traversal succeeds. If the peer is
-a browser, an older client, or Tailcat setup fails, both clients use croc's
-existing relay data ports. The public spelling `--transport derp` is retained;
+an older client, or Tailcat setup fails, both clients use croc's existing relay
+data ports. The public spelling `--transport derp` is retained;
 in strict mode it requires Tailcat support and disables croc-relay fallback.
 Public DERP is best effort and may apply fairness limits; see Tailscale's
 [DERP reference](https://tailscale.com/docs/reference/derp-servers) and
 [performance guidance](https://tailscale.com/docs/reference/troubleshooting/poor-performance-tailnet).
+
+Browsers cannot use Tailcat, so with a browser peer croc tries a direct WebRTC
+connection instead. The sender offers four data channels over the encrypted
+control channel; if they open, file data travels directly and keeps croc's own
+encryption on top of WebRTC's. Only STUN is used, never a TURN relay, so when
+no direct path exists the transfer falls back to the croc relay as before. A
+browser sender always tries WebRTC; a CLI sender follows the same size
+threshold as Tailcat. STUN servers only learn each peer's public address; the
+CLI's `--stun` flag (or `CROC_STUN`) and croc-web's `--stun` flag choose them,
+and `none` (an empty value for croc-web) disables STUN, leaving only direct LAN
+candidates. The defaults are Google's public STUN servers.
 
 
 #### Change Encryption Curve

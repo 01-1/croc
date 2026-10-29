@@ -43,6 +43,8 @@ const (
 	TypeRelayRamp        Type = "relay-ramp"
 	TypeSSHAuthorize     Type = "ssh-authorize"
 	TypeSSHOffer         Type = "ssh-offer"
+	TypeWebRTCOffer      Type = "webrtc-offer"
+	TypeWebRTCAnswer     Type = "webrtc-answer"
 )
 
 // FeatureSSHRendezvous marks the unencrypted PAKE negotiation for a shared
