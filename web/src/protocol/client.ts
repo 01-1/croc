@@ -246,7 +246,7 @@ async function openSenderData(
 
 // openReceiverData follows the sender's choice: it answers a WebRTC offer if
 // one arrives, then waits for the sender's transport selection.
-async function openReceiverData(
+export async function openReceiverData(
   control: CrocSocket,
   key: Uint8Array,
   peerFeatures: string[] | undefined,
@@ -259,28 +259,35 @@ async function openReceiverData(
   if (webrtcNegotiated(peerFeatures)) {
     let offered = false;
     let answered: WebRTCAnswer | undefined;
-    for (;;) {
-      checkAbort(signal);
-      const message = await receiveControl(control, key);
-      if (message.t === "webrtc-offer") {
-        if (offered) throw new Error("Sender sent a second WebRTC offer");
-        offered = true;
-        answered = await answerWebRTC(control, key, message, stunServers(settings), signal);
-        continue;
+    // The transfer's cleanup only sees data sockets, so an answered
+    // connection must be closed here on every exit that does not return it.
+    try {
+      for (;;) {
+        checkAbort(signal);
+        const message = await receiveControl(control, key);
+        if (message.t === "webrtc-offer") {
+          if (offered) throw new Error("Sender sent a second WebRTC offer");
+          offered = true;
+          answered = await answerWebRTC(control, key, message, stunServers(settings), signal);
+          continue;
+        }
+        if (message.t === "error") throw new Error(message.m || "Sender cancelled");
+        if (message.t !== "transport-select") {
+          throw new Error(`Expected a transport selection, got ${message.t}`);
+        }
+        if (message.m === TRANSPORT_WEBRTC) {
+          if (!answered) throw new Error("Sender selected WebRTC without an answered offer");
+          return await answered.wait(signal);
+        }
+        if (message.m !== TRANSPORT_RELAY) {
+          throw new Error(`Sender selected an unknown transport: ${message.m}`);
+        }
+        answered?.close();
+        break;
       }
-      if (message.t === "error") throw new Error(message.m || "Sender cancelled");
-      if (message.t !== "transport-select") {
-        throw new Error(`Expected a transport selection, got ${message.t}`);
-      }
-      if (message.m === TRANSPORT_WEBRTC) {
-        if (!answered) throw new Error("Sender selected WebRTC without an answered offer");
-        return answered.wait(signal);
-      }
+    } catch (error) {
       answered?.close();
-      if (message.m !== TRANSPORT_RELAY) {
-        throw new Error(`Sender selected an unknown transport: ${message.m}`);
-      }
-      break;
+      throw error;
     }
   }
   return openDataConnections(settings, room, dataPorts(banner), relayIndex, signal);
