@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -293,5 +295,91 @@ func TestReconnectClearsDirectStreamingFlag(t *testing.T) {
 	}
 	if client.sendingFileData.Load() {
 		t.Fatal("a reconnect attempt kept the streaming flag, so the new bundle's guard could fire during the next prompt")
+	}
+}
+
+func TestDirectPathFailureEndsSendWithLocalDiscovery(t *testing.T) {
+	relay := startTestRelay(t, 2)
+	listener := &fakeTailcatListener{offer: "direct-local-discovery-offer"}
+	bundles := make(chan *tailcatDataBundle, 1)
+	listener.accept = func(ctx context.Context) (*tailcatDataBundle, error) {
+		select {
+		case bundle := <-bundles:
+			return bundle, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	provider := &fakeTailcatTransport{available: true}
+	provider.listen = func(context.Context, []byte, tailcattransport.PathEvent) (tailcatDataListener, error) {
+		return listener, nil
+	}
+	provider.dial = func(ctx context.Context, _ string, _ []byte, _ tailcattransport.PathEvent) (*tailcatDataBundle, error) {
+		sender, receiver := newPipeDataBundles(1)
+		sender.directPath = func() bool { return true }
+		sender.disableDERP = func() error { return errors.New("DERP stayed enabled") }
+		select {
+		case bundles <- sender:
+			return receiver, nil
+		case <-ctx.Done():
+			_ = sender.Close()
+			_ = receiver.Close()
+			return nil, ctx.Err()
+		}
+	}
+	provider.validate = func(string, []byte) error { return nil }
+
+	sourcePath := filepath.Join(t.TempDir(), "direct.bin")
+	if err := os.WriteFile(sourcePath, []byte("direct only"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	options := Options{
+		SharedSecret:     "direct-local-discovery",
+		RelayAddress:     relay.address,
+		RelayPorts:       append([]string(nil), relay.dataPorts...),
+		RelayPassword:    "pass123",
+		NoPrompt:         true,
+		DisableLocal:     true,
+		Curve:            "p256",
+		Overwrite:        true,
+		DisableClipboard: true,
+	}
+	senderOptions := options
+	senderOptions.IsSender = true
+	senderOptions.Transport = TransportDirect
+	// The sender also offers its LAN relay, which this receiver never uses.
+	senderOptions.DisableLocal = false
+	sender, err := newClient(senderOptions, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.localIPLookup = func() ([]string, error) { return []string{"127.0.0.1"}, nil }
+	receiverOptions := options
+	receiverOptions.RelayPorts = nil
+	receiver, err := newClient(receiverOptions, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, folders, folderCount, err := GetFilesInfo([]string{sourcePath}, false, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	senderErr := make(chan error, 1)
+	receiverErr := make(chan error, 1)
+	go func() { senderErr <- sender.Send(files, folders, folderCount) }()
+	time.Sleep(100 * time.Millisecond)
+	go func() { receiverErr <- receiver.Receive() }()
+	defer cancelClients(sender, receiver)
+	for name, results := range map[string]chan error{"receiver": receiverErr, "sender": senderErr} {
+		select {
+		case err := <-results:
+			if err == nil || !strings.Contains(err.Error(), ErrDirectPath.Error()) {
+				t.Fatalf("%s error = %v; want the direct path error", name, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not return after the direct path failed", name)
+		}
 	}
 }
