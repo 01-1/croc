@@ -233,11 +233,16 @@ async function openSenderData(
   if (webrtcNegotiated(peerFeatures)) {
     onStatus?.("Connecting directly…");
     const sockets = await offerWebRTC(control, key, stunServers(settings), signal);
-    await sendControl(
-      control,
-      { t: "transport-select", m: sockets ? TRANSPORT_WEBRTC : TRANSPORT_RELAY },
-      key,
-    );
+    try {
+      await sendControl(
+        control,
+        { t: "transport-select", m: sockets ? TRANSPORT_WEBRTC : TRANSPORT_RELAY },
+        key,
+      );
+    } catch (error) {
+      for (const socket of sockets ?? []) socket.close();
+      throw error;
+    }
     if (sockets) return sockets;
     onStatus?.("Opening encrypted data channels…");
   }

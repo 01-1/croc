@@ -283,13 +283,13 @@ export async function offerWebRTC(
     // No offer was sent, so the receiver is still waiting for a selection.
     return undefined;
   }
-  await sendControl(
-    control,
-    { t: "webrtc-offer", m: pc.localDescription?.sdp ?? "", n: CHANNELS },
-    key,
-  );
   let answer: CrocMessage;
   try {
+    await sendControl(
+      control,
+      { t: "webrtc-offer", m: pc.localDescription?.sdp ?? "", n: CHANNELS },
+      key,
+    );
     // On a timeout this read stays first in the control socket's queue, so it
     // consumes the late answer and the next read gets the receiver's
     // following message.
