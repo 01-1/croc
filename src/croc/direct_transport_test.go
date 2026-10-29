@@ -280,3 +280,18 @@ func TestDirectPathGuardIgnoresSenderApprovalPrompt(t *testing.T) {
 	default:
 	}
 }
+
+func TestReconnectClearsDirectStreamingFlag(t *testing.T) {
+	client, err := newTestClient(Options{SharedSecret: "reconnect-streaming-flag", Curve: "p256"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.nextReconnectRoom = "next-room"
+	client.sendingFileData.Store(true)
+	if err := client.resetForReconnectAttempt(1); err != nil {
+		t.Fatal(err)
+	}
+	if client.sendingFileData.Load() {
+		t.Fatal("a reconnect attempt kept the streaming flag, so the new bundle's guard could fire during the next prompt")
+	}
+}

@@ -805,6 +805,7 @@ func (c *Client) resetForReconnectAttempt(attempt int) error {
 	c.tailcat.offerReceived = false
 	c.transportSelectionReceived = false
 	c.selectedDataTransport.Store(selectedTransportUnset)
+	c.sendingFileData.Store(false)
 	c.relayStandbyMu.Lock()
 	c.relayStandbyReady = false
 	c.relayStandbyMu.Unlock()
