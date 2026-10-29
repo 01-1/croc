@@ -378,7 +378,12 @@ export async function answerWebRTC(
     pc = undefined;
     if (error instanceof DOMException && error.name === "AbortError") throw error;
   }
-  await sendControl(control, { t: "webrtc-answer", m: sdp }, key);
+  try {
+    await sendControl(control, { t: "webrtc-answer", m: sdp }, key);
+  } catch (error) {
+    pc?.close();
+    throw error;
+  }
   if (!pc || !opened) return undefined;
   const connection = pc;
   const channelsOpened = opened;

@@ -4,11 +4,13 @@ import { answerWebRTC, DataChannelSocket, offerWebRTC } from "./webrtc";
 
 const control = vi.hoisted(() => ({
   sent: [] as { t: string }[],
+  sendError: undefined as Error | undefined,
   receive: (): Promise<unknown> => new Promise(() => {}),
 }));
 vi.mock("./relay", () => ({
   sendControl: async (_socket: unknown, message: { t: string }) => {
     control.sent.push(message);
+    if (control.sendError) throw control.sendError;
   },
   receiveControl: () => control.receive(),
 }));
@@ -164,6 +166,7 @@ describe("WebRTC negotiation", () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
     control.sent = [];
+    control.sendError = undefined;
     control.receive = () => new Promise(() => {});
   });
 
@@ -201,6 +204,22 @@ describe("WebRTC negotiation", () => {
     );
     await expect(offerWebRTC({} as CrocSocket, new Uint8Array(32), [])).resolves.toBeUndefined();
     expect(control.sent).toEqual([]);
+    expect(FakePeerConnection.last?.closed).toBe(true);
+  });
+
+  it("closes the peer connection when sending the answer fails", async () => {
+    vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
+    const error = new Error("Relay closed while sending the answer");
+    control.sendError = error;
+    await expect(
+      answerWebRTC(
+        {} as CrocSocket,
+        new Uint8Array(32),
+        { t: "webrtc-offer", m: "v=0 offer", n: 2 },
+        [],
+      ),
+    ).rejects.toBe(error);
+    expect(control.sent).toEqual([{ t: "webrtc-answer", m: "v=0 answer" }]);
     expect(FakePeerConnection.last?.closed).toBe(true);
   });
 
