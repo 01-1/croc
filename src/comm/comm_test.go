@@ -303,3 +303,66 @@ func benchmarkFrameWriter(b *testing.B, payloadSize int, write func(net.Conn) er
 		b.Fatal(err)
 	}
 }
+
+func TestReceiveStartedBeforeFinishesStartedFrame(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := New(clientConn)
+	frame := binary.LittleEndian.AppendUint32(append([]byte(nil), MAGIC_BYTES...), 5)
+	frame = append(frame, "first"...)
+	writeErr := make(chan error, 1)
+	go func() {
+		if _, err := serverConn.Write(frame[:3]); err != nil {
+			writeErr <- err
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+		if _, err := serverConn.Write(frame[3:]); err != nil {
+			writeErr <- err
+			return
+		}
+		_, err := New(serverConn).Write([]byte("second"))
+		writeErr <- err
+	}()
+
+	data, err := c.ReceiveStartedBefore(time.Now().Add(100 * time.Millisecond))
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("first"), data)
+	data, err = c.Receive()
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("second"), data)
+	assert.NoError(t, <-writeErr)
+}
+
+func TestReceiveStartedBeforeLeavesUnstartedFrame(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	c := New(clientConn)
+	_, err := c.ReceiveStartedBefore(time.Now().Add(30 * time.Millisecond))
+	assertTimeoutError(t, err)
+	go func() { _, _ = New(serverConn).Write([]byte("late")) }()
+	data, err := c.Receive()
+	assert.NoError(t, err)
+	assert.Equal(t, []byte("late"), data)
+}
+
+func TestReceiveStartedBeforeReportsInterruptedFrame(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	c := New(clientConn)
+	go func() {
+		_, _ = serverConn.Write(MAGIC_BYTES[:2])
+		time.Sleep(300 * time.Millisecond)
+		_ = serverConn.Close()
+	}()
+	_, err := c.ReceiveStartedBefore(time.Now().Add(100 * time.Millisecond))
+	assert.ErrorIs(t, err, ErrPartialFrame)
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("an interrupted frame was reported as a clean timeout: %v", err)
+	}
+}

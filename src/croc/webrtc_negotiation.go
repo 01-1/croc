@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/schollz/croc/v11/src/comm"
 	log "github.com/schollz/croc/v11/src/logger"
 	"github.com/schollz/croc/v11/src/message"
 	"github.com/schollz/croc/v11/src/tailcattransport"
@@ -142,8 +143,15 @@ func (c *Client) activateWebRTCSender(attempt *transferAttemptState) error {
 	return c.finishDataTransportActivation()
 }
 
+// receiveWebRTCAnswer waits until deadline for the answer to start arriving.
+// The sender falls back to the relay on the same control connection, so an
+// answer that is still arriving at the deadline is read in full rather than
+// abandoned mid-frame.
 func (c *Client) receiveWebRTCAnswer(deadline time.Time) (string, error) {
-	payload, err := c.connection(0).ReceiveWithDeadline(deadline)
+	payload, err := c.connection(0).ReceiveStartedBefore(deadline)
+	if errors.Is(err, comm.ErrPartialFrame) {
+		return "", tailcatProtocolError{err: fmt.Errorf("WebRTC answer: %w", err)}
+	}
 	if err != nil {
 		return "", err
 	}

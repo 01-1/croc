@@ -2,13 +2,17 @@ package croc
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/schollz/croc/v11/src/comm"
 	log "github.com/schollz/croc/v11/src/logger"
+	"github.com/schollz/croc/v11/src/message"
 )
 
 // runWebRTCTestTransfer sends one file between two CLI clients that share a
@@ -129,5 +133,50 @@ func TestWebRTCFeatureAdvertisement(t *testing.T) {
 				t.Fatalf("advertises WebRTC = %t; want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestWebRTCAnswerDeadlineKeepsControlFramesAligned(t *testing.T) {
+	key := bytes.Repeat([]byte{0x61}, 32)
+	local, peer := net.Pipe()
+	defer local.Close()
+	defer peer.Close()
+	client := &Client{Key: key, conn: make([]*comm.Comm, 1)}
+	client.setConnection(0, comm.New(local))
+
+	answer, err := message.Encode(key, message.Message{Type: message.TypeWebRTCAnswer, Message: "late answer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame := binary.LittleEndian.AppendUint32(append([]byte(nil), comm.MAGIC_BYTES...), uint32(len(answer)))
+	frame = append(frame, answer...)
+	written := make(chan error, 1)
+	go func() {
+		// Part of the answer arrives before the sender's deadline and the
+		// rest after it, followed by the receiver's next message.
+		if _, err := peer.Write(frame[:3]); err != nil {
+			written <- err
+			return
+		}
+		time.Sleep(300 * time.Millisecond)
+		if _, err := peer.Write(frame[3:]); err != nil {
+			written <- err
+			return
+		}
+		written <- message.Send(comm.New(peer), key, message.Message{Type: message.TypeError, Message: "next"})
+	}()
+
+	if got, err := client.receiveWebRTCAnswer(time.Now().Add(100 * time.Millisecond)); err != nil || got != "late answer" {
+		t.Errorf("receiveWebRTCAnswer = (%q, %v); want the answer whose frame started before the deadline", got, err)
+	}
+	payload, err := client.connection(0).ReceiveWithDeadline(time.Now().Add(2 * time.Second))
+	if err != nil {
+		t.Fatalf("next control frame: %v", err)
+	}
+	if next, err := message.Decode(key, payload); err != nil || next.Message != "next" {
+		t.Fatalf("next control message = (%+v, %v)", next, err)
+	}
+	if err := <-written; err != nil {
+		t.Fatal(err)
 	}
 }
