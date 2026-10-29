@@ -19,26 +19,30 @@ import (
 
 func TestReceiverCodeWithSenderAddress(t *testing.T) {
 	addr := netip.MustParseAddrPort("203.0.113.7:9009")
-	code := codephrase.WithSenderAddress("bacon-pickle-trout", addr)
-	receiver, err := newTestClient(Options{SharedSecret: code, Curve: "p256"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	plain, err := newTestClient(Options{SharedSecret: "bacon-pickle-trout", Curve: "p256"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if receiver.senderRelayAddress != addr || receiver.Options.SharedSecret != "bacon-pickle-trout" {
-		t.Fatalf("receiver parsed %v and %q", receiver.senderRelayAddress, receiver.Options.SharedSecret)
-	}
-	if receiver.Options.RoomName != plain.Options.RoomName || receiver.pakePassphrase != plain.pakePassphrase {
-		t.Fatal("a code with a sender address must use the same room and PAKE password as its plain code")
-	}
-	if redacted := receiver.redactError(errors.New("failed with " + code)).Error(); strings.Contains(redacted, "@") {
-		t.Fatalf("sender address was not redacted: %q", redacted)
-	}
-	if _, err := newTestClient(Options{IsSender: true, SharedSecret: code, Curve: "p256"}); err == nil {
-		t.Fatal("a sender accepted a code that already includes a sender address")
+	for _, plainCode := range []string{"bacon-pickle-trout", "me@example-dot-com"} {
+		t.Run(plainCode, func(t *testing.T) {
+			code := codephrase.WithSenderAddress(plainCode, addr)
+			receiver, err := newTestClient(Options{SharedSecret: code, Curve: "p256"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plain, err := newTestClient(Options{SharedSecret: plainCode, Curve: "p256"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if receiver.senderRelayAddress != addr || receiver.Options.SharedSecret != plainCode {
+				t.Fatalf("receiver parsed %v and %q", receiver.senderRelayAddress, receiver.Options.SharedSecret)
+			}
+			if receiver.Options.RoomName != plain.Options.RoomName || receiver.pakePassphrase != plain.pakePassphrase {
+				t.Fatal("a code with a sender address must use the same room and PAKE password as its plain code")
+			}
+			if redacted := receiver.redactError(errors.New("failed with " + code)).Error(); strings.Contains(redacted, strings.TrimPrefix(code, plainCode)) {
+				t.Fatalf("sender address was not redacted: %q", redacted)
+			}
+			if _, err := newTestClient(Options{IsSender: true, SharedSecret: code, Curve: "p256"}); err == nil {
+				t.Fatal("a sender accepted a code that already includes a sender address")
+			}
+		})
 	}
 }
 

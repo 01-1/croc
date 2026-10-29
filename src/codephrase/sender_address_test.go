@@ -36,6 +36,15 @@ func TestSenderAddressRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSenderAddressRoundTripWithCustomCode(t *testing.T) {
+	addr := netip.MustParseAddrPort("203.0.113.7:9009")
+	code := WithSenderAddress("me@example-dot-com", addr)
+	plain, gotAddr, ok, err := SplitSenderAddress(code)
+	if err != nil || !ok || plain != "me@example-dot-com" || gotAddr != addr {
+		t.Fatalf("SplitSenderAddress(%q) = (%q, %v, %t, %v)", code, plain, gotAddr, ok, err)
+	}
+}
+
 func TestSplitSenderAddressLeavesOtherCodesUnchanged(t *testing.T) {
 	for _, code := range []string{
 		"bacon-pickle-trout",

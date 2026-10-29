@@ -31,14 +31,16 @@ func WithSenderAddress(code string, addr netip.AddrPort) string {
 }
 
 // SplitSenderAddress separates a code produced by WithSenderAddress into the
-// plain code and the sender's relay address. Codes without a sender address,
-// including custom codes that contain "@" followed by non-mnemonicode words,
-// are returned unchanged with ok false.
+// plain code and the sender's relay address. It splits at the last "@",
+// because the address is appended last and a custom code may contain "@"
+// itself. Codes without a sender address, including custom codes that contain
+// "@" followed by non-mnemonicode words, are returned unchanged with ok false.
 func SplitSenderAddress(code string) (plain string, addr netip.AddrPort, ok bool, err error) {
-	plain, suffix, found := strings.Cut(code, senderAddressSeparator)
-	if !found || plain == "" || suffix == "" {
+	separator := strings.LastIndex(code, senderAddressSeparator)
+	if separator <= 0 || separator == len(code)-len(senderAddressSeparator) {
 		return code, netip.AddrPort{}, false, nil
 	}
+	plain, suffix := code[:separator], code[separator+len(senderAddressSeparator):]
 	data, err := mnemonicode.DecodeWordList(nil, strings.Split(suffix, "-"))
 	if err != nil {
 		if errors.Is(err, mnemonicode.ErrUnknownWord) {
