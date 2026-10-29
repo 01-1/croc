@@ -104,6 +104,25 @@ func encodeInvitationSecret(secret string) string {
 	return encodeNumberWords(new(big.Int).SetBytes(data), 3)
 }
 
+func looksNumberWordSecret(text string) bool {
+	parts := strings.Split(text, "-")
+	if len(parts) < 4 || len(parts)%2 != 0 {
+		return false
+	}
+	for i := 0; i < len(parts); i += 2 {
+		number, word := parts[i], parts[i+1]
+		if len(number) != 2 || number[0] < '0' || number[0] > '9' || number[1] < '0' || number[1] > '9' || len(word) == 0 {
+			return false
+		}
+		for _, c := range []byte(word) {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func decodeInvitationSecret(text string) (string, error) {
 	value, pairs, err := decodeNumberWords(text, 0)
 	if err != nil || pairs < 2 {

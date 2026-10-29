@@ -46,7 +46,7 @@ func SplitSenderAddress(code string) (plain string, addr netip.AddrPort, ok bool
 	plain, suffix := code[:separator], code[separator+len(senderAddressSeparator):]
 	var data []byte
 	first, _, _ := strings.Cut(suffix, "-")
-	if len(first) == 2 && first[0] >= '0' && first[0] <= '9' && first[1] >= '0' && first[1] <= '9' {
+	if looksNumberWordSecret(plain) && len(first) == 2 && first[0] >= '0' && first[0] <= '9' && first[1] >= '0' && first[1] <= '9' {
 		data, err = decodeInvitationAddress(suffix)
 		if err == nil {
 			plain, err = decodeInvitationSecret(plain)
