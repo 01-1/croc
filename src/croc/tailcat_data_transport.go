@@ -80,6 +80,8 @@ func (c *Client) dataTransport() tailcatDataTransport {
 type tailcatDataBundle struct {
 	connections []net.Conn
 	stats       func() tailcattransport.BundleStats
+	directPath  func() bool
+	disableDERP func() error
 	cleanup     func() error
 	closeOnce   sync.Once
 	closeErr    error
@@ -92,6 +94,8 @@ func newTailcatBundle(bundle *tailcattransport.Bundle) *tailcatDataBundle {
 	return &tailcatDataBundle{
 		connections: bundle.Connections(),
 		stats:       bundle.Stats,
+		directPath:  bundle.DirectPath,
+		disableDERP: bundle.DisableDERP,
 		cleanup:     bundle.Close,
 	}
 }

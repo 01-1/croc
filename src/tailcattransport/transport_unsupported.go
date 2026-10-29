@@ -42,4 +42,6 @@ type Bundle struct{}
 func (b *Bundle) Connections() []net.Conn { return nil }
 func (b *Bundle) Stats() BundleStats      { return BundleStats{} }
 func (b *Bundle) Close() error            { return nil }
+func (b *Bundle) DisableDERP() error      { return ErrUnsupported }
+func (b *Bundle) DirectPath() bool        { return false }
 func IsExpectedClose(error) bool          { return true }

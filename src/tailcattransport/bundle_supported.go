@@ -94,6 +94,8 @@ type Bundle struct {
 	sent        atomic.Int64
 	received    atomic.Int64
 	stopStatus  chan struct{}
+	disableDERP func() error
+	peerStatus  func() *ipnstate.Status
 	closeOnce   sync.Once
 	closeErr    error
 }
@@ -170,6 +172,35 @@ func pathFromStatus(status func() *ipnstate.Status) string {
 		}
 	}
 	return ""
+}
+
+// DisableDERP stops the underlying Tailcat node from sending or receiving over
+// DERP, so traffic can only use the current direct path.
+func (b *Bundle) DisableDERP() error {
+	if b == nil || b.disableDERP == nil {
+		return errors.New("Tailcat bundle cannot disable DERP")
+	}
+	return b.disableDERP()
+}
+
+// DirectPath reports whether magicsock is currently sending to every peer over
+// a direct UDP path alone, not DERP or a peer relay. Unlike Stats().Path, which
+// follows magicsock's contact log lines, it reads live per-peer state, so it
+// also notices a direct path that has stopped being confirmed.
+func (b *Bundle) DirectPath() bool {
+	if b == nil || b.peerStatus == nil {
+		return false
+	}
+	st := b.peerStatus()
+	if st == nil || len(st.Peer) == 0 {
+		return false
+	}
+	for _, peer := range st.Peer {
+		if peer == nil || peer.CurAddr == "" || peer.PeerRelay != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // Stats returns current stream, path, setup, and logical byte counters.

@@ -182,7 +182,10 @@ func (l *Listener) Accept(ctx context.Context) (*Bundle, error) {
 			return nil, ctx.Err()
 		}
 	}
-	return newBundle(connections, l.started, l.owner, l.server.Status, l.path), nil
+	bundle := newBundle(connections, l.started, l.owner, l.server.Status, l.path)
+	bundle.disableDERP = l.server.DisableDERP
+	bundle.peerStatus = l.server.PeerStatus
+	return bundle, nil
 }
 
 // Close shuts down a listener or a bundle that owns its server.
@@ -236,5 +239,8 @@ func Dial(ctx context.Context, offer string, sessionKey []byte, config Config, e
 			return nil, fmt.Errorf("dial Tailcat streams: %w", dialErr)
 		}
 	}
-	return newBundle(connections, started, owner, client.Status, path), nil
+	bundle := newBundle(connections, started, owner, client.Status, path)
+	bundle.disableDERP = client.DisableDERP
+	bundle.peerStatus = client.PeerStatus
+	return bundle, nil
 }
