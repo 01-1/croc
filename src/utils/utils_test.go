@@ -1638,3 +1638,26 @@ func TestZipDirectoryHonoursIgnoredPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestParseByteSize(t *testing.T) {
+	tests := map[string]int64{
+		"1":      1,
+		"512MiB": 512 << 20,
+		"5GB":    5_000_000_000,
+		"2 GiB":  2 << 30,
+	}
+	for input, expected := range tests {
+		actual, err := ParseByteSize(input)
+		if err != nil {
+			t.Fatalf("ParseByteSize(%q): %v", input, err)
+		}
+		if actual != expected {
+			t.Fatalf("ParseByteSize(%q) = %d, want %d", input, actual, expected)
+		}
+	}
+	for _, input := range []string{"", "-1", "1.5GiB", "999999999999999999999TiB"} {
+		if _, err := ParseByteSize(input); err == nil {
+			t.Fatalf("ParseByteSize(%q) unexpectedly succeeded", input)
+		}
+	}
+}

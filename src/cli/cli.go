@@ -95,6 +95,7 @@ func newApp() *cli.App {
 				&cli.BoolFlag{Name: "zip", Usage: "zip folder before sending"},
 				&cli.StringFlag{Name: "code", Aliases: []string{"c"}, Usage: "codephrase used to connect to relay (at least 6 characters)"},
 				&cli.StringFlag{Name: "transport", Value: string(croc.TransportAuto), Usage: "sender file data transport (auto, derp, relay)"},
+				&cli.StringFlag{Name: "direct-threshold", Usage: "smallest transfer that --transport auto sends directly, e.g. 0, 16MiB (default 128MiB)"},
 				&cli.StringFlag{Name: "hash", Value: "xxhash", Usage: "hash algorithm (xxhash, imohash, md5, highway)"},
 				&cli.StringFlag{Name: "text", Aliases: []string{"t"}, Usage: "send some text"},
 				&cli.BoolFlag{Name: "no-local", Usage: "disable local relay when sending"},
@@ -562,6 +563,9 @@ func applyRememberedSendOptions(c *cli.Context, options *croc.Options, remembere
 	if !c.IsSet("transport") && remembered.Transport != "" {
 		options.Transport = remembered.Transport
 	}
+	if !c.IsSet("direct-threshold") && remembered.AutoTailcatThreshold != nil {
+		options.AutoTailcatThreshold = remembered.AutoTailcatThreshold
+	}
 	if !c.IsSet("relay") && strings.HasPrefix(remembered.RelayAddress, "non-default:") {
 		rememberedAddr := strings.TrimPrefix(remembered.RelayAddress, "non-default:")
 		options.RelayAddress = strings.TrimSpace(rememberedAddr)
@@ -610,6 +614,14 @@ func send(c *cli.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	var directThreshold *int64
+	if c.IsSet("direct-threshold") {
+		threshold, err := utils.ParseByteSize(c.String("direct-threshold"))
+		if err != nil {
+			return fmt.Errorf("--direct-threshold: %w", err)
+		}
+		directThreshold = &threshold
+	}
 	stored := c.Bool("store") || (c.Command != nil && c.Command.Name == "store")
 	if stored && transport != croc.TransportAuto {
 		return errors.New("--transport must be auto for stored transfers")
@@ -647,37 +659,38 @@ func send(c *cli.Context) (err error) {
 	}
 
 	crocOptions := croc.Options{
-		SharedSecret:      c.String("code"),
-		IsSender:          true,
-		Debug:             c.Bool("debug"),
-		NoPrompt:          c.Bool("yes"),
-		RelayAddress:      c.String("relay"),
-		RelayAddress6:     c.String("relay6"),
-		Stdout:            c.Bool("stdout"),
-		DisableLocal:      c.Bool("no-local"),
-		OnlyLocal:         c.Bool("local"),
-		IgnoreStdin:       c.Bool("ignore-stdin"),
-		RelayPorts:        ports,
-		Ask:               c.Bool("ask"),
-		NoMultiplexing:    c.Bool("no-multi"),
-		RelayPassword:     determinePass(c),
-		SendingText:       c.String("text") != "",
-		NoCompress:        c.Bool("no-compress"),
-		Overwrite:         c.Bool("overwrite"),
-		Rename:            c.Bool("rename"),
-		Curve:             c.String("curve"),
-		HashAlgorithm:     c.String("hash"),
-		ThrottleUpload:    c.String("throttleUpload"),
-		ZipFolder:         c.Bool("zip"),
-		GitIgnore:         c.Bool("git"),
-		ShowQrCode:        c.Bool("qrcode"),
-		MulticastAddress:  c.String("multicast"),
-		Exclude:           excludeStrings,
-		ExcludeFile:       excludeFiles,
-		Quiet:             c.Bool("quiet"),
-		DisableClipboard:  c.Bool("disable-clipboard"),
-		ExtendedClipboard: c.Bool("extended-clipboard"),
-		Transport:         transport,
+		SharedSecret:         c.String("code"),
+		IsSender:             true,
+		Debug:                c.Bool("debug"),
+		NoPrompt:             c.Bool("yes"),
+		RelayAddress:         c.String("relay"),
+		RelayAddress6:        c.String("relay6"),
+		Stdout:               c.Bool("stdout"),
+		DisableLocal:         c.Bool("no-local"),
+		OnlyLocal:            c.Bool("local"),
+		IgnoreStdin:          c.Bool("ignore-stdin"),
+		RelayPorts:           ports,
+		Ask:                  c.Bool("ask"),
+		NoMultiplexing:       c.Bool("no-multi"),
+		RelayPassword:        determinePass(c),
+		SendingText:          c.String("text") != "",
+		NoCompress:           c.Bool("no-compress"),
+		Overwrite:            c.Bool("overwrite"),
+		Rename:               c.Bool("rename"),
+		Curve:                c.String("curve"),
+		HashAlgorithm:        c.String("hash"),
+		ThrottleUpload:       c.String("throttleUpload"),
+		ZipFolder:            c.Bool("zip"),
+		GitIgnore:            c.Bool("git"),
+		ShowQrCode:           c.Bool("qrcode"),
+		MulticastAddress:     c.String("multicast"),
+		Exclude:              excludeStrings,
+		ExcludeFile:          excludeFiles,
+		Quiet:                c.Bool("quiet"),
+		DisableClipboard:     c.Bool("disable-clipboard"),
+		ExtendedClipboard:    c.Bool("extended-clipboard"),
+		Transport:            transport,
+		AutoTailcatThreshold: directThreshold,
 	}
 	if crocOptions.RelayAddress != models.DEFAULT_RELAY {
 		crocOptions.RelayAddress6 = ""
@@ -693,6 +706,11 @@ func send(c *cli.Context) (err error) {
 			return
 		}
 		applyRememberedSendOptions(c, &crocOptions, rememberedOptions)
+	}
+	// Check after remembered options are merged: a remembered relay or derp
+	// transport would otherwise silently ignore an explicit threshold.
+	if c.IsSet("direct-threshold") && crocOptions.Transport != croc.TransportAuto {
+		return errors.New("--direct-threshold only applies to --transport auto")
 	}
 	downgradedTransport, err := resolveSendTransport(&crocOptions)
 	if err != nil {

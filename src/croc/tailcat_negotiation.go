@@ -237,9 +237,19 @@ func (c *Client) tailcatFallbackAllowed() bool {
 	return !c.peerRequiresTailcat()
 }
 
+// autoTailcatThreshold returns the smallest transfer for which auto mode tries
+// Tailcat.
+func (c *Client) autoTailcatThreshold() int64 {
+	if threshold := c.Options.AutoTailcatThreshold; threshold != nil {
+		return *threshold
+	}
+	return autoTailcatThresholdBytes
+}
+
 func (c *Client) autoTailcatEligible() bool {
 	transferBytes := c.tailcat.transferBytes.Load()
-	eligible := transferBytes >= autoTailcatThresholdBytes
+	threshold := c.autoTailcatThreshold()
+	eligible := transferBytes >= threshold
 	c.tailcat.autoDecisionOnce.Do(func() {
 		selected := TransportRelay
 		if eligible {
@@ -248,7 +258,7 @@ func (c *Client) autoTailcatEligible() bool {
 		log.Debugf(
 			"auto transport size decision: bytes=%d threshold=%d selected=%s",
 			transferBytes,
-			autoTailcatThresholdBytes,
+			threshold,
 			selected,
 		)
 	})
@@ -292,7 +302,7 @@ func (c *Client) startTailcatPreparation() {
 	if !ok || !dataTransport.Available() || c.Options.Transport == TransportRelay || c.Options.OnlyLocal {
 		return
 	}
-	if c.Options.Transport == TransportAuto && c.tailcat.transferBytes.Load() < autoTailcatThresholdBytes {
+	if c.Options.Transport == TransportAuto && c.tailcat.transferBytes.Load() < c.autoTailcatThreshold() {
 		return
 	}
 	c.tailcat.prepareOnce.Do(func() {

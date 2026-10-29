@@ -543,6 +543,16 @@ func TestTransportRejectsInvalidValuesAndIncompatibleCLIOptions(t *testing.T) {
 			want: "--transport must be auto for local-only transfers",
 		},
 		{
+			name: "direct threshold with relay",
+			args: []string{"croc", "--ignore-stdin", "send", "--transport", "relay", "--direct-threshold", "0", "--text", "hello"},
+			want: "--direct-threshold only applies to --transport auto",
+		},
+		{
+			name: "invalid direct threshold",
+			args: []string{"croc", "--ignore-stdin", "send", "--direct-threshold", "lots", "--text", "hello"},
+			want: `--direct-threshold: invalid byte size "lots"`,
+		},
+		{
 			name: "stored derp",
 			args: []string{"croc", "--ignore-stdin", "send", "--transport", "derp", "--store", "unused"},
 			want: "--transport must be auto for stored transfers",
@@ -1206,6 +1216,66 @@ func TestApplyRememberedSendOptionsTransport(t *testing.T) {
 				return
 			}
 			t.Fatal("send command not found")
+		})
+	}
+}
+
+func TestRememberedDirectThreshold(t *testing.T) {
+	remembered := int64(16 << 20)
+	for _, test := range []struct {
+		name string
+		args []string
+		want *int64
+	}{
+		{name: "inherits remembered threshold", args: []string{"croc", "send"}, want: &remembered},
+		{name: "explicit threshold overrides remembered", args: []string{"croc", "send", "--direct-threshold", "0"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app := newApp()
+			for _, command := range app.Commands {
+				if command.Name != "send" {
+					continue
+				}
+				command.Action = func(ctx *cli.Context) error {
+					var options croc.Options
+					applyRememberedSendOptions(ctx, &options, croc.Options{AutoTailcatThreshold: &remembered})
+					if (options.AutoTailcatThreshold == nil) != (test.want == nil) ||
+						(test.want != nil && *options.AutoTailcatThreshold != *test.want) {
+						t.Fatalf("AutoTailcatThreshold = %v, want %v", options.AutoTailcatThreshold, test.want)
+					}
+					return nil
+				}
+				if err := app.Run(test.args); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			t.Fatal("send command not found")
+		})
+	}
+}
+
+func TestDirectThresholdRejectsRememberedNonAutoTransport(t *testing.T) {
+	for _, remembered := range []croc.TransportMode{croc.TransportRelay, croc.TransportDERP} {
+		t.Run(string(remembered), func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CROC_CONFIG_DIR", dir)
+			if err := os.WriteFile(filepath.Join(dir, "send.json"), []byte(`{"Transport":"`+string(remembered)+`"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A fresh version-check cache keeps the background update check
+			// from writing into the directory while it is being removed.
+			if err := writeVersionCheckCache(filepath.Join(dir, versionCheckCacheName), versionCheckCache{
+				CheckedAt: time.Now().UTC(), LatestVersion: Version,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// The relay refuses connections, so a send that slips past the
+			// check fails fast instead of waiting for a receiver.
+			err := newApp().Run([]string{"croc", "--ignore-stdin", "--relay", "127.0.0.1:1", "send", "--no-local", "--direct-threshold", "0", "--text", "hello"})
+			if err == nil || err.Error() != "--direct-threshold only applies to --transport auto" {
+				t.Fatalf("error = %v; want the threshold to be rejected with a remembered %s transport", err, remembered)
+			}
 		})
 	}
 }

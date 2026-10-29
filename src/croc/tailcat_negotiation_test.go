@@ -157,6 +157,37 @@ func TestTotalLogicalTransferSizeAndAutoThreshold(t *testing.T) {
 	}
 }
 
+func TestConfiguredAutoTailcatThreshold(t *testing.T) {
+	provider := &fakeTailcatTransport{available: true}
+	threshold := func(bytes int64) *int64 { return &bytes }
+	for _, tt := range []struct {
+		name      string
+		threshold *int64
+		bytes     int64
+		eligible  bool
+	}{
+		{name: "default", bytes: autoTailcatThresholdBytes - 1},
+		{name: "zero tries every transfer", threshold: threshold(0), bytes: 1, eligible: true},
+		{name: "lower threshold", threshold: threshold(16 << 20), bytes: 16 << 20, eligible: true},
+		{name: "higher threshold", threshold: threshold(1 << 30), bytes: 200 << 20},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				Options: Options{IsSender: true, Transport: TransportAuto, AutoTailcatThreshold: tt.threshold},
+				tailcat: tailcatClientState{transport: provider},
+			}
+			client.tailcat.transferBytes.Store(tt.bytes)
+			if got := client.autoTailcatEligible(); got != tt.eligible {
+				t.Fatalf("autoTailcatEligible() = %t, want %t", got, tt.eligible)
+			}
+		})
+	}
+	negative := int64(-1)
+	if _, err := newClient(Options{SharedSecret: "negative-threshold", Curve: "p256", IsSender: true, AutoTailcatThreshold: &negative}, provider); err == nil {
+		t.Fatal("negative auto Tailcat threshold was accepted")
+	}
+}
+
 func TestReceiverCannotSelectTransport(t *testing.T) {
 	provider := &fakeTailcatTransport{available: true}
 	if _, err := newClient(Options{SharedSecret: "receiver-auto", Curve: "p256", Transport: TransportAuto}, provider); err != nil {
