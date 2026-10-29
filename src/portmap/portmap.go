@@ -89,7 +89,8 @@ func Map(ctx context.Context, cfg Config) (*Set, error) {
 	attempts := []attempt{
 		{budget: 1500 * time.Millisecond, new: func(context.Context) (mapper, error) { return newPCP(gw, self), nil }},
 		{budget: 1500 * time.Millisecond, new: func(context.Context) (mapper, error) { return natpmp{gateway: gw}, nil }},
-		{budget: 3 * time.Second, new: func(ctx context.Context) (mapper, error) { return discoverUPnP(ctx, self) }},
+		// Discovery takes about two seconds; the rest covers the mappings.
+		{budget: 4 * time.Second, new: func(ctx context.Context) (mapper, error) { return discoverUPnP(ctx, self) }},
 	}
 	return mapWith(ctx, cfg, attempts)
 }

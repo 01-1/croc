@@ -348,3 +348,48 @@ func TestUPnPRollsBackMappingWhenSetupFails(t *testing.T) {
 		t.Fatalf("UPnP mappings left after failed setup: %v", igd.leases)
 	}
 }
+
+// fakeSearch behaves like goupnp's SSDP search: it takes a second and
+// refuses to start with less than a second left before the deadline.
+func fakeSearch(result ...igdClient) func(context.Context) ([]igdClient, error) {
+	return func(ctx context.Context) ([]igdClient, error) {
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < time.Second {
+			return nil, errors.New("not enough time left for an SSDP search")
+		}
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return result, nil
+	}
+}
+
+func TestUPnPDiscoveryFindsOlderServicesWithinBudget(t *testing.T) {
+	older := &fakeIGD{leases: map[uint16]uint32{}, external: publicAddr.String()}
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	found, err := discoverUPnPWith(ctx, netip.MustParseAddr("192.168.1.20"), []func(context.Context) ([]igdClient, error){
+		fakeSearch(),      // WANIPConnection:2: nothing
+		fakeSearch(older), // WANIPConnection:1
+		fakeSearch(),      // WANPPPConnection:1: nothing
+	})
+	if err != nil {
+		t.Fatalf("WANIPConnection:1 was not found within the budget: %v", err)
+	}
+	if found.client != older {
+		t.Fatal("discovery returned the wrong gateway service")
+	}
+}
+
+func TestUPnPDiscoveryPrefersNewerServices(t *testing.T) {
+	newer := &fakeIGD{leases: map[uint16]uint32{}}
+	older := &fakeIGD{leases: map[uint16]uint32{}}
+	found, err := discoverUPnPWith(context.Background(), netip.MustParseAddr("192.168.1.20"), []func(context.Context) ([]igdClient, error){
+		fakeSearch(newer),
+		fakeSearch(older),
+	})
+	if err != nil || found.client != newer {
+		t.Fatalf("discovery = (%v, %v); want the WANIPConnection:2 service", found, err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/huin/goupnp/dcps/internetgateway2"
@@ -28,30 +29,49 @@ type upnp struct {
 	permanent bool
 }
 
-// discoverUPnP returns the first IGD connection service found on the LAN.
+// upnpSearches find IGD connection services, in order of preference.
+var upnpSearches = []func(context.Context) ([]igdClient, error){
+	func(ctx context.Context) ([]igdClient, error) {
+		clients, _, err := internetgateway2.NewWANIPConnection2ClientsCtx(ctx)
+		return asIGD(clients), err
+	},
+	func(ctx context.Context) ([]igdClient, error) {
+		clients, _, err := internetgateway2.NewWANIPConnection1ClientsCtx(ctx)
+		return asIGD(clients), err
+	},
+	func(ctx context.Context) ([]igdClient, error) {
+		clients, _, err := internetgateway2.NewWANPPPConnection1ClientsCtx(ctx)
+		return asIGD(clients), err
+	},
+}
+
+// discoverUPnP returns the most preferred IGD connection service found on the
+// LAN. The searches run at once: each SSDP search takes about two seconds, and
+// goupnp refuses to start one with less than a second left, so running them in
+// turn would starve the older WANIPConnection:1 and WANPPPConnection:1
+// services.
 func discoverUPnP(ctx context.Context, self netip.Addr) (*upnp, error) {
-	discover := []func(context.Context) ([]igdClient, error){
-		func(ctx context.Context) ([]igdClient, error) {
-			clients, _, err := internetgateway2.NewWANIPConnection2ClientsCtx(ctx)
-			return asIGD(clients), err
-		},
-		func(ctx context.Context) ([]igdClient, error) {
-			clients, _, err := internetgateway2.NewWANIPConnection1ClientsCtx(ctx)
-			return asIGD(clients), err
-		},
-		func(ctx context.Context) ([]igdClient, error) {
-			clients, _, err := internetgateway2.NewWANPPPConnection1ClientsCtx(ctx)
-			return asIGD(clients), err
-		},
+	return discoverUPnPWith(ctx, self, upnpSearches)
+}
+
+func discoverUPnPWith(ctx context.Context, self netip.Addr, searches []func(context.Context) ([]igdClient, error)) (*upnp, error) {
+	found := make([][]igdClient, len(searches))
+	var wg sync.WaitGroup
+	for i, search := range searches {
+		wg.Go(func() {
+			if clients, err := search(ctx); err == nil {
+				found[i] = clients
+			}
+		})
 	}
-	for _, find := range discover {
-		clients, err := find(ctx)
-		if err == nil && len(clients) > 0 {
+	wg.Wait()
+	for _, clients := range found {
+		if len(clients) > 0 {
 			return &upnp{client: clients[0], self: self}, nil
 		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return nil, errors.New("upnp: no internet gateway device found")
 }

@@ -14,8 +14,8 @@ import (
 const (
 	// senderRelayExposeTimeout bounds gateway port mapping before the code is
 	// shown. It covers each protocol's budget in src/portmap: 1.5 s for PCP and
-	// NAT-PMP each, and 3 s for UPnP discovery.
-	senderRelayExposeTimeout = 6 * time.Second
+	// NAT-PMP each, and 4 s for UPnP discovery and mapping.
+	senderRelayExposeTimeout = 7 * time.Second
 	// senderHostedDialTimeout bounds the receiver's attempt to reach the
 	// sender's relay before it falls back to the public relay.
 	senderHostedDialTimeout = 5 * time.Second
