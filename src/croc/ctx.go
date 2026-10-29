@@ -20,7 +20,7 @@ type stop struct {
 	cancelOnce sync.Once
 	doneOnce   sync.Once
 	stopChan   chan struct{} //peerdiscovery
-	run        func(ctx context.Context, debugLevel string, listener net.Listener, password string, banner ...string) error
+	run        func(ctx context.Context, debugLevel string, listener net.Listener, password string, admit func(room string, peer, waiting net.Addr) bool, banner ...string) error
 	hash       func(fname string, algorithm string, showProgress ...bool) (hash256 []byte, err error)
 	gui        bool
 }
@@ -29,8 +29,8 @@ type stop struct {
 func newStop(ctx context.Context) *stop {
 	s := &stop{
 		stopChan: make(chan struct{}),
-		run: func(ctx context.Context, debugLevel string, listener net.Listener, password string, banner ...string) error {
-			return tcp.RunWithListener(listener, password, tcp.WithCtx(ctx), tcp.WithLogLevel(debugLevel), tcp.WithBanner(banner...))
+		run: func(ctx context.Context, debugLevel string, listener net.Listener, password string, admit func(room string, peer, waiting net.Addr) bool, banner ...string) error {
+			return tcp.RunWithListener(listener, password, tcp.WithCtx(ctx), tcp.WithLogLevel(debugLevel), tcp.WithBanner(banner...), tcp.WithAdmissionFilter(admit))
 		},
 		hash: utils.HashFile,
 	}

@@ -30,6 +30,7 @@ type server struct {
 	password     string
 	roomPaired   func()
 	roomProtocol func(RoomProtocol)
+	admit        func(room string, peer, waiting net.Addr) bool
 	rooms        roomMap
 	started      chan struct{}
 
@@ -67,6 +68,7 @@ type roomMap struct {
 type roomAdmission struct {
 	created           bool
 	full              bool
+	refused           bool
 	otherConnection   *comm.Comm
 	evicted           bool
 	evictedRoom       string
@@ -113,6 +115,9 @@ func (s *server) admitToRoom(room string, c *comm.Comm) roomAdmission {
 		if roomData.full {
 			return roomAdmission{full: true}
 		}
+		if s.admit != nil && !s.admit(room, c.Connection().RemoteAddr(), roomData.first.Connection().RemoteAddr()) {
+			return roomAdmission{refused: true}
+		}
 		roomData.second = c
 		roomData.full = true
 		s.rooms.rooms[room] = roomData
@@ -135,6 +140,9 @@ func (s *server) admitToRoom(room string, c *comm.Comm) roomAdmission {
 		}
 	}
 
+	if s.admit != nil && !s.admit(room, c.Connection().RemoteAddr(), nil) {
+		return roomAdmission{refused: true}
+	}
 	result := roomAdmission{created: true}
 	if waitingRooms >= s.maxRoomsOpen && oldestRoomFound {
 		delete(s.rooms.rooms, oldestRoom)
@@ -421,6 +429,10 @@ var weakKey = []byte{1, 2, 3}
 // configured per-source or per-room admission policy.
 var ErrAdmissionLimited = errors.New("relay admission rate limited")
 
+// ErrRoomNotAllowed is returned when a relay configured with
+// WithAdmissionFilter refuses a peer.
+var ErrRoomNotAllowed = errors.New("relay room not allowed")
+
 func (s *server) clientHandshake(c *comm.Comm, deadline, firstMessageDeadline time.Time) (result handshakeResult, err error) {
 	send := func(message []byte) error {
 		if err := c.Connection().SetWriteDeadline(deadline); err != nil {
@@ -586,6 +598,13 @@ func (s *server) clientCommunication(c *comm.Comm, handshake handshakeResult) (r
 	}
 
 	admission := s.admitToRoom(room, c)
+	if admission.refused {
+		err = sendAdmission("room not allowed")
+		if err != nil {
+			return room, err
+		}
+		return room, ErrRoomNotAllowed
+	}
 	if admission.evicted {
 		log.Debug("evicting oldest waiting room at capacity")
 		if admission.evictedConnection != nil {
@@ -915,6 +934,10 @@ func ConnectToTCPServerWithCapabilityContext(ctx context.Context, address, passw
 					c.Close()
 					return nil, "", "", false, errors.New("relay room full")
 				}
+				if err == nil && bytes.Equal(confirmation, []byte("room not allowed")) {
+					c.Close()
+					return nil, "", "", false, ErrRoomNotAllowed
+				}
 			}
 			stopClose()
 			c.Close()
@@ -1045,6 +1068,8 @@ func HandshakeTCPServerCapability(c *comm.Comm, password, room string) (banner s
 	if !bytes.Equal(data, []byte("ok")) {
 		if bytes.Equal(data, []byte("rate limited")) {
 			err = ErrAdmissionLimited
+		} else if bytes.Equal(data, []byte("room not allowed")) {
+			err = ErrRoomNotAllowed
 		} else {
 			err = fmt.Errorf("relay admission rejected")
 		}

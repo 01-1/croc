@@ -155,7 +155,7 @@ func TestLocalRelayStartupWorkerFailureClosesGroup(t *testing.T) {
 	fail := make(chan struct{})
 	cancelled := make(chan struct{})
 	var calls atomic.Int32
-	c.stop.run = func(ctx context.Context, _ string, listener net.Listener, _ string, _ ...string) error {
+	c.stop.run = func(ctx context.Context, _ string, listener net.Listener, _ string, _ func(string, net.Addr, net.Addr) bool, _ ...string) error {
 		first := calls.Add(1) == 1
 		started <- listener
 		if first {

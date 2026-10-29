@@ -115,11 +115,17 @@ func (c *Client) setupLocalRelay() error {
 		debugLevel = "debug"
 	}
 	password := c.Options.RelayPassword
+	// A --transport direct sender may expose this relay to the internet
+	// (see exposeSenderRelay), where the default password authorizes no one.
+	var admit func(room string, peer, waiting net.Addr) bool
+	if c.Options.Transport == TransportDirect {
+		admit = c.admitToSenderRelay
+	}
 	var workers sync.WaitGroup
 	for _, listener := range listeners {
 		workers.Go(func() {
 			defer closeListeners()
-			if err := c.stop.run(relayCtx, debugLevel, listener, password, localRelayBanner); err != nil {
+			if err := c.stop.run(relayCtx, debugLevel, listener, password, admit, localRelayBanner); err != nil {
 				log.Errorf("local relay stopped: %v", err)
 			}
 		})

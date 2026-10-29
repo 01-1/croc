@@ -191,6 +191,10 @@ func (c *Client) activateSecureChannel(attempt *transferAttemptState) (err error
 	if !c.Options.IsSender && c.peerRequiresTailcat() && !localTailcat {
 		return fmt.Errorf("peer requires Tailcat, but Tailcat is disabled or unavailable locally")
 	}
+	if c.directViaSenderRelay() {
+		log.Debug("selected the sender's own relay for direct file data")
+		return c.activateRelayDataChannels(attempt)
+	}
 	if c.Options.Transport.requiresTailcat() && !c.tailcat.peerCapable {
 		return fmt.Errorf("--transport %s requires a Tailcat-capable peer", c.Options.Transport)
 	}
@@ -221,7 +225,7 @@ func (c *Client) pakeFeatures() []string {
 }
 
 func (c *Client) localTailcatSupported() bool {
-	if c.Options.Transport == TransportRelay || c.Options.OnlyLocal || !c.dataTransport().Available() {
+	if c.Options.Transport == TransportRelay || c.Options.OnlyLocal || !c.dataTransport().Available() || c.directViaSenderRelay() {
 		return false
 	}
 	if !c.Options.IsSender || c.Options.Transport.requiresTailcat() {

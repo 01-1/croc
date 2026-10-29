@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"fmt"
+	"net"
 	"slices"
 	"time"
 )
@@ -133,6 +134,18 @@ func WithRoomPairedCallback(callback func()) serverOptsFunc {
 func WithRoomProtocolCallback(callback func(RoomProtocol)) serverOptsFunc {
 	return func(s *server) error {
 		s.roomProtocol = callback
+		return nil
+	}
+}
+
+// WithAdmissionFilter decides which peers may use the relay's rooms. It is
+// called with the arriving peer's address when that peer would open a room
+// (waiting is nil), and with the waiting peer's address as well when it would
+// join one; returning false refuses the arriving peer. A nil filter admits
+// everyone. It runs under the relay's room lock and must not block.
+func WithAdmissionFilter(allowed func(room string, peer, waiting net.Addr) bool) serverOptsFunc {
+	return func(s *server) error {
+		s.admit = allowed
 		return nil
 	}
 }

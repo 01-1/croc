@@ -458,6 +458,37 @@ nothing can fall back to a relay. If no direct path appears within the setup
 window, or the path is lost during the transfer, croc stops with an error
 instead of relaying. The code-phrase handshake and control messages still use
 the croc relay. Browser receivers cannot use it.
+
+Before that, a `--transport direct` sender tries to host the meeting point
+itself. It asks the router to forward its local relay's TCP ports (PCP,
+NAT-PMP, or UPnP), or uses a global IPv6 address, and appends that address to
+the invitation it shows. Both the secret and address portions alternate
+two-digit numbers and words, separated by `@`. Numbers use digits 2 through 9
+to avoid `0/O` and `1/I/L`; words are case-insensitive. Each number-word pair
+encodes 16 bits, so IPv4 needs two pairs, with the default port omitted. The
+original secret is restored exactly before authentication. IPv6 zero groups
+are compressed when that makes the address shorter.
+An IPv4 invitation looks like `22-acid-23-craft@84-couple-56-clock`.
+Use `--address-words` to keep the original secret and spoken-word address format,
+for example `bacon-pickle-trout@kilo-jaguar-asia`. Both formats are accepted.
+A receiver
+given such a code connects straight to the sender, with no public relay, DERP,
+or STUN involved. Mappings are renewed during the transfer and removed when
+croc exits, and they are only used when the router's own external address is
+public, so double NAT and carrier-grade NAT fall back to a plain code. A
+receiver that cannot reach the address falls back to the public relay and the
+direct Tailcat path. Anyone who sees the longer code learns the sender's public
+IP address.
+
+The sender prints a persistent notice that the hosted invitation reveals its
+public IP. Routers that only support unlimited UPnP leases cause a second
+notice before croc requests those forwards: normal shutdown removes them,
+but a crash can leave them behind indefinitely. After croc has stopped, run
+`croc cleanup-ports` on the same computer and network to remove stale unlimited
+TCP forwards labelled `croc relay`. Cleanup preserves unrelated rules, checks
+that the forwards still belong to this computer, and leaves ports that are
+still in use alone. If the router cannot list its forwards, remove the
+`croc relay` entries through the router's administration page instead.
 Public DERP is best effort and may apply fairness limits; see Tailscale's
 [DERP reference](https://tailscale.com/docs/reference/derp-servers) and
 [performance guidance](https://tailscale.com/docs/reference/troubleshooting/poor-performance-tailnet).

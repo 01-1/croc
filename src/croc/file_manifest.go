@@ -343,7 +343,7 @@ func (c *Client) processMessageFileInfoStartWithLimits(m message.Message, limits
 	// These fields are needed to retry if the connection drops before the end
 	// of a large manifest. All other sender settings are applied at completion.
 	c.peerReconnectVersion = header.ReconnectVersion
-	c.nextReconnectRoom = header.NextReconnectRoom
+	c.setNextReconnectRoom(header.NextReconnectRoom)
 	return nil
 }
 

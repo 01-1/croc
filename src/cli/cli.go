@@ -87,6 +87,13 @@ func newApp() *cli.App {
       CROC_SECRET=six-word-invitation croc ssh`
 	app.Commands = []*cli.Command{
 		{
+			Name:        "cleanup-ports",
+			Usage:       "remove stale unlimited router port forwards created by croc on this computer",
+			Description: "run after a crash; keeps unrelated forwarding rules and ports that are still in use",
+			HelpName:    "croc cleanup-ports",
+			Action:      cleanupPorts,
+		},
+		{
 			Name:        "send",
 			Usage:       "send file(s), or folder (see options with croc send -h)",
 			Description: "send file(s), or folder",
@@ -95,6 +102,7 @@ func newApp() *cli.App {
 				&cli.BoolFlag{Name: "zip", Usage: "zip folder before sending"},
 				&cli.StringFlag{Name: "code", Aliases: []string{"c"}, Usage: "codephrase used to connect to relay (at least 6 characters)"},
 				&cli.StringFlag{Name: "transport", Value: string(croc.TransportAuto), Usage: "sender file data transport (auto, derp, direct, relay)"},
+				&cli.BoolFlag{Name: "address-words", Usage: "keep the original secret and use spoken words for the hosted address (direct mode)"},
 				&cli.StringFlag{Name: "hash", Value: "xxhash", Usage: "hash algorithm (xxhash, imohash, md5, highway)"},
 				&cli.StringFlag{Name: "text", Aliases: []string{"t"}, Usage: "send some text"},
 				&cli.BoolFlag{Name: "no-local", Usage: "disable local relay when sending"},
@@ -424,7 +432,13 @@ func assignPublicRelay(options *croc.Options, relayIndex int) error {
 
 func assignPublicRelayForCode(options *croc.Options) error {
 	relays := publicrelay.Relays()
-	relayIndex, err := codephrase.RelayIndex(options.SharedSecret, len(relays))
+	// A sender-hosted address suffix must not change the relay, so a receiver
+	// that cannot reach the sender's own relay meets it on the same one.
+	code, _, _, err := codephrase.SplitSenderAddress(options.SharedSecret)
+	if err != nil {
+		return err
+	}
+	relayIndex, err := codephrase.RelayIndex(code, len(relays))
 	if err != nil {
 		return err
 	}
@@ -562,6 +576,9 @@ func applyRememberedSendOptions(c *cli.Context, options *croc.Options, remembere
 	if !c.IsSet("transport") && remembered.Transport != "" {
 		options.Transport = remembered.Transport
 	}
+	if !c.IsSet("address-words") {
+		options.HostedAddressWords = remembered.HostedAddressWords
+	}
 	if !c.IsSet("relay") && strings.HasPrefix(remembered.RelayAddress, "non-default:") {
 		rememberedAddr := strings.TrimPrefix(remembered.RelayAddress, "non-default:")
 		options.RelayAddress = strings.TrimSpace(rememberedAddr)
@@ -678,6 +695,8 @@ func send(c *cli.Context) (err error) {
 		DisableClipboard:  c.Bool("disable-clipboard"),
 		ExtendedClipboard: c.Bool("extended-clipboard"),
 		Transport:         transport,
+
+		HostedAddressWords: c.Bool("address-words"),
 	}
 	if crocOptions.RelayAddress != models.DEFAULT_RELAY {
 		crocOptions.RelayAddress6 = ""
@@ -693,6 +712,9 @@ func send(c *cli.Context) (err error) {
 			return
 		}
 		applyRememberedSendOptions(c, &crocOptions, rememberedOptions)
+	}
+	if c.IsSet("address-words") && crocOptions.Transport != croc.TransportDirect {
+		return errors.New("--address-words only applies to --transport direct")
 	}
 	downgradedTransport, err := resolveSendTransport(&crocOptions)
 	if err != nil {

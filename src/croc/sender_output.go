@@ -2,10 +2,24 @@ package croc
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"github.com/schollz/croc/v11/src/termui"
 )
+
+func formatUnlimitedPortForwardNotice(ports []uint16) string {
+	return fmt.Sprintf("\nRouter port forwarding: croc is requesting unlimited TCP forwards for ports %v.\n"+
+		"Normal shutdown removes them. A crash can leave them behind indefinitely.\n"+
+		"After croc has stopped, run: croc cleanup-ports\n\n", ports)
+}
+
+func formatHostedInvitationNotice(address netip.AddrPort) string {
+	if !address.IsValid() {
+		return ""
+	}
+	return fmt.Sprintf("Hosted invitation: anyone who sees this code can learn your public IP address (%s).\n\n", address.Addr())
+}
 
 const (
 	secretColorPrefix = termui.Yellow

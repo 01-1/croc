@@ -13,6 +13,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -130,6 +131,9 @@ type Options struct {
 	DisableClipboard  bool
 	ExtendedClipboard bool
 	Transport         TransportMode `json:",omitempty"`
+
+	// HostedAddressWords keeps the sender relay address readable aloud.
+	HostedAddressWords bool `json:",omitempty"`
 }
 
 // TransportMode controls how a sender selects the file-data connection after
@@ -241,16 +245,19 @@ type Client struct {
 	dataAEAD               cipher.AEAD
 
 	// tcp connections
-	connectionsMu              sync.RWMutex
-	conn                       []*comm.Comm
-	baseRoomName               string
-	pakePassphrase             string
-	pakeInitiator              []byte
-	pakeResponder              []byte
-	pakeCurve                  string
-	pakeKeys                   pakekey.Keys
-	pakeConfirmationPending    bool
-	nextReconnectRoom          string
+	connectionsMu           sync.RWMutex
+	conn                    []*comm.Comm
+	baseRoomName            string
+	pakePassphrase          string
+	pakeInitiator           []byte
+	pakeResponder           []byte
+	pakeCurve               string
+	pakeKeys                pakekey.Keys
+	pakeConfirmationPending bool
+	nextReconnectRoom       string
+	// redactMu guards the room names that redactError reads from other
+	// goroutines while a route's transfer updates them.
+	redactMu                   sync.Mutex
 	relayControlAddress        string
 	relayCapability            string
 	relayControlPeerToPeer     bool
@@ -280,6 +287,12 @@ type Client struct {
 	// setupLocalRelay(). It is captured before any goroutines that might
 	// overwrite c.Options.RelayPorts are launched.
 	localRelayPort string
+	// senderRelayAddress is the sender-hosted relay address a receiver found
+	// in its code; codeWithSenderAddress keeps that full code for redaction.
+	senderRelayAddress    netip.AddrPort
+	codeWithSenderAddress string
+	// exposeRelayPorts overrides gateway port mapping in tests.
+	exposeRelayPorts func(context.Context, []uint16) (netip.AddrPort, func(), error)
 
 	barMu              sync.RWMutex
 	bar                *progressbar.ProgressBar
@@ -466,6 +479,18 @@ func newClient(ops Options, transport tailcatDataTransport) (c *Client, err erro
 		}
 	}
 
+	plainSecret, senderRelay, hasSenderRelay, err := codephrase.SplitSenderAddress(c.Options.SharedSecret)
+	if err != nil {
+		return nil, err
+	}
+	if hasSenderRelay {
+		if c.Options.IsSender {
+			return nil, errors.New("this code includes the sender's address and can only be used to receive")
+		}
+		c.senderRelayAddress = senderRelay
+		c.codeWithSenderAddress = c.Options.SharedSecret
+		c.Options.SharedSecret = plainSecret
+	}
 	codeComponents, err := codephrase.Parse(c.Options.SharedSecret)
 	if err != nil {
 		return
@@ -533,14 +558,29 @@ func newClient(ops Options, transport tailcatDataTransport) (c *Client, err erro
 }
 
 func (c *Client) redactError(err error) error {
-	return redact.Error(
-		err,
+	c.redactMu.Lock()
+	secrets := []string{
+		c.codeWithSenderAddress,
 		c.Options.SharedSecret,
 		c.pakePassphrase,
 		c.baseRoomName,
 		c.Options.RoomName,
 		c.nextReconnectRoom,
-	)
+	}
+	c.redactMu.Unlock()
+	return redact.Error(err, secrets...)
+}
+
+func (c *Client) setRoomName(room string) {
+	c.redactMu.Lock()
+	defer c.redactMu.Unlock()
+	c.Options.RoomName = room
+}
+
+func (c *Client) setNextReconnectRoom(room string) {
+	c.redactMu.Lock()
+	defer c.redactMu.Unlock()
+	c.nextReconnectRoom = room
 }
 
 type transferDisconnectError struct {
@@ -784,7 +824,7 @@ func (c *Client) resetForReconnectAttempt(attempt int) error {
 	if c.nextReconnectRoom == "" {
 		return transferDisconnectError{err: fmt.Errorf("missing reconnect room")}
 	}
-	c.Options.RoomName = c.nextReconnectRoom
+	c.setRoomName(c.nextReconnectRoom)
 	c.resetLifecycle()
 	c.Key = nil
 	c.dataAEAD = nil
@@ -1782,7 +1822,7 @@ func (c *Client) reconnectRelayAttempt(handshake func(*comm.Comm) error) error {
 		}
 		c.setRelayControlRoute(address, capability, c.relayControlRouteIsPeerToPeer(address))
 		c.setConnection(0, conn)
-		c.Options.RoomName = room
+		c.setRoomName(room)
 		c.Options.RelayPorts = strings.Split(banner, ",")
 		if c.Options.NoMultiplexing {
 			c.Options.RelayPorts = []string{c.Options.RelayPorts[0]}
@@ -1827,6 +1867,19 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 		c.finishFilePreparation(prepareErr)
 		hashResult <- prepareErr
 	}()
+	senderHosted, closeSenderHosted, err := c.exposeSenderRelay()
+	if err != nil {
+		return err
+	}
+	defer closeSenderHosted()
+	displayCode := c.Options.SharedSecret
+	if senderHosted.IsValid() {
+		displayCode = codephrase.WithSenderAddress(displayCode, senderHosted)
+		if c.Options.HostedAddressWords {
+			displayCode = codephrase.WithSenderAddressWords(c.Options.SharedSecret, senderHosted)
+		}
+		c.codeWithSenderAddress = displayCode
+	}
 	flags := &strings.Builder{}
 	if !c.Options.PublicRelay && c.Options.RelayAddress != models.DEFAULT_RELAY && !c.Options.OnlyLocal {
 		flags.WriteString("--relay " + c.Options.RelayAddress + " ")
@@ -1840,7 +1893,7 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 	}
 	clipboardNotice := ""
 	if !c.Options.DisableClipboard {
-		clipboardText := formatClipboardText(c.Options.SharedSecret, flags.String(), c.Options.ExtendedClipboard)
+		clipboardText := formatClipboardText(displayCode, flags.String(), c.Options.ExtendedClipboard)
 		if copyToClipboard(clipboardText, true, c.Options.ExtendedClipboard) {
 			clipboardNotice = "code copied to clipboard"
 			if c.Options.ExtendedClipboard {
@@ -1849,7 +1902,8 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 		}
 	}
 	output, colorEnabled := termui.Output(os.Stderr)
-	fmt.Fprint(output, formatSendInstructions(c.Options.SharedSecret, flags.String(), webURL, clipboardNotice, colorEnabled))
+	fmt.Fprint(output, formatHostedInvitationNotice(senderHosted))
+	fmt.Fprint(output, formatSendInstructions(displayCode, flags.String(), webURL, clipboardNotice, colorEnabled))
 	if c.Options.ShowQrCode && webURL != "" {
 		showReceiveCommandQrCode(webURL)
 	}
@@ -1866,8 +1920,10 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 	if !c.Options.DisableLocal {
 		// add two things to the error channel
 		errchan = make(chan error, 2)
-		if err := c.setupLocalRelay(); err != nil {
-			return fmt.Errorf("start local relay: %w", err)
+		if c.localRelayPort == "" {
+			if err := c.setupLocalRelay(); err != nil {
+				return fmt.Errorf("start local relay: %w", err)
+			}
 		}
 		// broadcast on ipv4
 		go c.broadcastOnLocalNetwork(false)
@@ -2075,10 +2131,26 @@ func (c *Client) Receive() (err error) {
 
 	c.setReceiveStatus(receiveStatusConnecting)
 	var route relayControlResult
-	if !c.Options.DisableLocal && !isIPset {
+	senderHosted := false
+	if c.senderRelayAddress.IsValid() && !isIPset && !c.Options.OnlyLocal {
+		route, err = c.connectSenderHostedRelay()
+		if err == nil {
+			log.Debugf("connected to the sender-hosted relay at %v", c.senderRelayAddress)
+			senderHosted = true
+			// Keep the public relay as a reconnect route in case the
+			// sender's address stops answering mid-transfer.
+			c.rememberReconnectRelayAddress(c.Options.RelayAddress)
+			c.rememberReconnectRelayAddress(c.Options.RelayAddress6)
+		} else {
+			log.Debugf("sender-hosted relay %v unreachable; meeting through the public relay: %v", c.senderRelayAddress, err)
+		}
+	}
+	switch {
+	case senderHosted:
+	case !c.Options.DisableLocal && !isIPset:
 		log.Debug("racing peer discovery with the public relay")
 		route, usingLocal, err = c.connectReceiverRelayControl(c.Options.RelayAddress6, c.Options.RelayAddress)
-	} else {
+	default:
 		route, err = c.connectRelayControl(c.Options.RelayAddress6, c.Options.RelayAddress)
 	}
 	if err != nil {
@@ -2094,7 +2166,7 @@ func (c *Client) Receive() (err error) {
 	defer stopClose()
 	defer route.connection.Close()
 	c.setConnection(0, route.connection)
-	c.setRelayControlRoute(route.address, route.capability, usingLocal || isIPset)
+	c.setRelayControlRoute(route.address, route.capability, usingLocal || isIPset || senderHosted)
 	log.Debugf("receiver connection established: %+v", c.connection(0))
 	log.Debugf("banner: %s", route.banner)
 	banner := route.banner
@@ -2102,7 +2174,7 @@ func (c *Client) Receive() (err error) {
 	if c.Options.TestFlag {
 		log.Debugf("TEST FLAG ENABLED, TESTING LOCAL IPS")
 	}
-	if c.Options.TestFlag || (!usingLocal && !c.Options.DisableLocal && !isIPset) {
+	if c.Options.TestFlag || (!usingLocal && !c.Options.DisableLocal && !isIPset && !senderHosted) {
 		// ask the sender for their local ips and port
 		// and try to connect to them
 		var ips []string
@@ -2511,7 +2583,7 @@ func (c *Client) processSenderInfo(senderInfo SenderInfo) (done bool, err error)
 	if c.peerInlineMetadata {
 		c.ExternalIPConnected = preferredPeerIP(c.ExternalIPConnected, senderInfo.ExternalIP)
 	}
-	c.nextReconnectRoom = senderInfo.NextReconnectRoom
+	c.setNextReconnectRoom(senderInfo.NextReconnectRoom)
 	c.TotalNumberFolders = senderInfo.TotalNumberFolders
 	// a reconnect offers the file list again, keep what the user already declined
 	declined := make(map[string]bool)
@@ -3143,7 +3215,7 @@ func (c *Client) updateIfSenderChannelSecured() (err error) {
 			if err != nil {
 				return
 			}
-			c.nextReconnectRoom = nextReconnectRoom
+			c.setNextReconnectRoom(nextReconnectRoom)
 		}
 		err = c.sendSenderInfo(SenderInfo{
 			FilesToTransfer:        c.FilesToTransfer,

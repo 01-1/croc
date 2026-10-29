@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/schollz/croc/v11/internal/cli"
+	"github.com/schollz/croc/v11/src/codephrase"
 	"github.com/schollz/croc/v11/src/croc"
 	"github.com/schollz/croc/v11/src/models"
 	"github.com/schollz/croc/v11/src/publicrelay"
@@ -839,6 +841,25 @@ func TestAssignPublicRelayForCode(t *testing.T) {
 		}
 		if options.RelayAddress != address || options.RelayAddress6 != "" || !options.PublicRelay {
 			t.Fatalf("assign %q = %#v", code, options)
+		}
+	}
+}
+
+func TestAssignPublicRelayIgnoresSenderAddress(t *testing.T) {
+	for _, code := range []string{"Word-word-word", "poker-hedge-floss", "acid-acorn-acre", "custom-passphrase"} {
+		plain := croc.Options{SharedSecret: code, RelayAddress6: models.DEFAULT_RELAY6}
+		withAddress := croc.Options{
+			SharedSecret:  codephrase.WithSenderAddress(code, netip.MustParseAddrPort("203.0.113.7:9009")),
+			RelayAddress6: models.DEFAULT_RELAY6,
+		}
+		if err := assignPublicRelayForCode(&plain); err != nil {
+			t.Fatal(err)
+		}
+		if err := assignPublicRelayForCode(&withAddress); err != nil {
+			t.Fatal(err)
+		}
+		if withAddress.RelayAddress != plain.RelayAddress {
+			t.Fatalf("%q with a sender address uses %s; the plain code uses %s", code, withAddress.RelayAddress, plain.RelayAddress)
 		}
 	}
 }
