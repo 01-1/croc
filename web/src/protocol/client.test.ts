@@ -118,6 +118,58 @@ describe("DataReceiver failure handling", () => {
   });
 });
 
+describe("DataReceiver pipelining", () => {
+  const CHUNK = 32 * 1024;
+
+  function chunkPayload(position: number) {
+    const payload = new Uint8Array(8 + CHUNK);
+    new DataView(payload.buffer).setBigUint64(0, BigInt(position), true);
+    return payload;
+  }
+
+  it("decodes several chunks from one socket at once and accepts them out of order", async () => {
+    const count = 6;
+    const pending: { resolve(value: Uint8Array): void; position: number }[] = [];
+    engineMocks.decrypt.mockReset().mockImplementation(
+      (encrypted: Uint8Array) =>
+        new Promise<Uint8Array>((resolve) => {
+          pending.push({ resolve, position: encrypted[0] * CHUNK });
+        }),
+    );
+    let sent = 0;
+    const socket = {
+      receive: () =>
+        sent < count
+          ? Promise.resolve(new Uint8Array([sent++]))
+          : new Promise<Uint8Array>(() => {}),
+    } as unknown as CrocSocket;
+    const written: number[] = [];
+    const recordingSink = { ...sink, writeAt: async (position: number) => void written.push(position) };
+    const receiver = new DataReceiver([socket], key, true);
+    const done = receiver.receive({ ...file, size: count * CHUNK }, recordingSink, () => {});
+
+    await vi.waitFor(() => expect(pending.length).toBe(count));
+    // Every chunk is decoding at once; finish them in reverse order.
+    for (const entry of [...pending].reverse()) entry.resolve(chunkPayload(entry.position));
+    await done;
+    expect(written.sort((a, b) => a - b)).toEqual(Array.from({ length: count }, (_, i) => i * CHUNK));
+    receiver.stop();
+  });
+
+  it("still fails the transfer when a pipelined chunk cannot be decoded", async () => {
+    engineMocks.decrypt.mockReset().mockRejectedValue(new Error("message authentication failed"));
+    let sent = 0;
+    const socket = {
+      receive: () =>
+        sent++ < 3 ? Promise.resolve(new Uint8Array([1])) : new Promise<Uint8Array>(() => {}),
+    } as unknown as CrocSocket;
+    const receiver = new DataReceiver([socket], key, true);
+    await expect(
+      receiver.receive({ ...file, size: 4 * CHUNK }, sink, () => {}),
+    ).rejects.toThrow("message authentication failed");
+  });
+});
+
 describe("outgoing file preparation", () => {
   it("reuses a hash that was started before Send", async () => {
     const file = new File(["croc"], "croc.txt", {

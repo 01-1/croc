@@ -604,6 +604,134 @@ export async function chooseStoredReceiveDestination(offer: TransferOffer) {
   return blobDownloadDestination(offer);
 }
 
+// Contiguous bytes sent to the hash worker in one update.
+const HASH_BATCH_BYTES = 1024 * 1024;
+// Out-of-order bytes held for the hash. Past this, a data socket has fallen
+// far behind the others, and the sink's own hash is cheaper than keeping the
+// rest of the file in memory.
+const HASH_AHEAD_LIMIT_BYTES = 16 * 1024 * 1024;
+
+// IncrementalHashSink hashes a receive sink's contents with xxhash while the
+// file arrives, so verification does not read the whole file back afterwards.
+// It hashes the contiguous prefix of the file; chunks that arrive ahead of it
+// wait in memory until the gap fills, which stays small because croc's data
+// sockets interleave chunks. If anything goes wrong, or the waiting chunks
+// exceed HASH_AHEAD_LIMIT_BYTES, it falls back to the wrapped sink's own hash.
+class IncrementalHashSink implements ReceiveSink {
+  private engine = protocolEngine();
+  private handle: Promise<number>;
+  private next = 0;
+  private ahead = new Map<number, Uint8Array>();
+  private aheadBytes = 0;
+  private batch: Uint8Array[] = [];
+  private batchBytes = 0;
+  private chain: Promise<void> = Promise.resolve();
+  private failed = false;
+  private released = false;
+
+  constructor(
+    private inner: ReceiveSink,
+    private size: number,
+  ) {
+    this.handle = this.engine.hashInit();
+    this.handle.catch(() => {
+      this.failed = true;
+    });
+  }
+
+  async writeAt(position: number, bytes: Uint8Array) {
+    await this.inner.writeAt(position, bytes);
+    if (this.failed) return;
+    if (position !== this.next) {
+      this.ahead.set(position, bytes);
+      this.aheadBytes += bytes.byteLength;
+      if (this.aheadBytes > HASH_AHEAD_LIMIT_BYTES) {
+        this.failed = true;
+        this.release();
+      }
+      return;
+    }
+    this.take(bytes);
+    for (let chunk = this.ahead.get(this.next); chunk; chunk = this.ahead.get(this.next)) {
+      this.ahead.delete(this.next);
+      this.aheadBytes -= chunk.byteLength;
+      this.take(chunk);
+    }
+    if (this.batchBytes >= HASH_BATCH_BYTES || this.next === this.size) this.flush();
+  }
+
+  private take(bytes: Uint8Array) {
+    this.batch.push(bytes);
+    this.batchBytes += bytes.byteLength;
+    this.next += bytes.byteLength;
+  }
+
+  private flush() {
+    if (this.batchBytes === 0) return;
+    const joined = new Uint8Array(this.batchBytes);
+    let offset = 0;
+    for (const part of this.batch) {
+      joined.set(part, offset);
+      offset += part.byteLength;
+    }
+    this.batch = [];
+    this.batchBytes = 0;
+    this.chain = this.chain
+      .then(async () => {
+        if (!this.failed) await this.engine.hashUpdate(await this.handle, joined);
+      })
+      .catch(() => {
+        this.failed = true;
+      });
+  }
+
+  finalize() {
+    return this.inner.finalize();
+  }
+
+  async hash(algorithm: "xxhash" | "sha256" = "xxhash", signal?: AbortSignal) {
+    if (algorithm === "xxhash" && !this.failed && this.next === this.size) {
+      this.flush();
+      await this.chain;
+      if (!this.failed) {
+        try {
+          return await this.engine.hashFinal(await this.handle);
+        } catch {
+          // Fall back to hashing the stored file.
+        } finally {
+          this.release();
+        }
+      }
+    }
+    this.release();
+    return this.inner.hash(algorithm, signal);
+  }
+
+  commit() {
+    return this.inner.commit();
+  }
+
+  async abort() {
+    this.release();
+    await this.inner.abort();
+  }
+
+  private release() {
+    if (this.released) return;
+    this.released = true;
+    this.ahead.clear();
+    this.aheadBytes = 0;
+    this.batch = [];
+    void this.handle.then((handle) => this.engine.hashRelease(handle)).catch(() => undefined);
+  }
+}
+
+// hashWhileReceiving wraps a sink so its xxhash is computed during the
+// transfer.
+export function hashWhileReceiving(sink: ReceiveSink, size: number): ReceiveSink {
+  return new IncrementalHashSink(sink, size);
+}
+
 export async function verifySink(
   sink: ReceiveSink,
   expected: Uint8Array,

@@ -158,4 +158,38 @@ set `CROC_E2E_PERF_FIXTURE` to an absolute file path and
 `CROC_E2E_PERF_OUTPUT` to an absolute JSON output path, then run the Chromium
 `large croc executable` Playwright test. Capturing the old transfer baseline
 requires the original engine build; the saved baseline is included above.
+The output's `verifiedMs` stops when the page reports the files received and
+verified; `elapsedMs` also includes Playwright saving the downloads.
+
+### Receive pipeline
+
+Two receive-path changes remove most of the browser's per-chunk waiting:
+
+- Each data socket keeps up to eight chunks decoding in the protocol worker at
+  once. A chunk's decode crosses to the worker and back through several
+  asynchronous steps, so waiting for each one before reading the next frame
+  left the threads mostly idle. Chunks carry their own position, and sinks
+  still receive them one at a time.
+- Files are hashed with XXH64 while they arrive. The contiguous prefix is sent
+  to the worker in about 1 MiB batches; chunks that arrive ahead of it wait
+  until the gap fills. Verification then finishes without reading the whole
+  file back. If incremental hashing fails, or more than 16 MiB waits for a
+  gap because one data socket has fallen behind, verification falls back to
+  hashing the stored file.
+
+Measured on Linux x86_64 with Playwright's Chromium Headless Shell
+149.0.7827.55, a 128 MiB incompressible file, and three runs each. Phases come
+from the receive panel's status changes; the rate covers accepting the offer
+through "All files received and verified".
+
+| Measurement | Before | After |
+| --- | ---: | ---: |
+| Receiving phase, s | 2.10–2.63 | 1.49–1.73 |
+| Verification phase, s | 0.66–0.83 | 0.04 |
+| Accept to verified, MiB/s | 30.7–40.8 | 58.6–60.6 |
+
+The CLI sender and relay are not the limit: a CLI → CLI transfer of the same
+file over a local relay ran at about 125 MiB/s. Disabling compression did not
+change the browser rate, and a separate hashing worker did not improve it, so
+the remaining cost is per-chunk work in the page and worker.
 

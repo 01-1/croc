@@ -1002,12 +1002,13 @@ test("CLI → Web verifies a large croc executable", async ({
     await expect(receivePanel).toContainText("All files received and verified", {
       timeout: transferTimeout,
     });
+    const verifiedMs = performance.now() - started;
     await cli.done;
     await expectDownloads(downloads, fixtures);
     if (process.env.CROC_E2E_PERF_OUTPUT) {
       const bytes = [...fixtures.contents.values()].reduce((sum,b)=>sum+b.length,0);
       const elapsedMs = performance.now()-started;
-      await fs.writeFile(process.env.CROC_E2E_PERF_OUTPUT, JSON.stringify({bytes,elapsedMs,MiBps:bytes/1048576/(elapsedMs/1000)})+"\n");
+      await fs.writeFile(process.env.CROC_E2E_PERF_OUTPUT, JSON.stringify({bytes,verifiedMs,verifiedMiBps:bytes/1048576/(verifiedMs/1000),elapsedMs,MiBps:bytes/1048576/(elapsedMs/1000)})+"\n");
     }
   } finally {
     cli.stop();
