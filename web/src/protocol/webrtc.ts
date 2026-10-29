@@ -260,20 +260,25 @@ export async function offerWebRTC(
   stunServers: string[],
   signal?: AbortSignal,
 ): Promise<DataSocket[] | undefined> {
-  const pc = newPeerConnection(stunServers);
-  const releaseAbort = closeOnAbort(pc, signal);
-  const channels = Array.from({ length: CHANNELS }, (_, index) =>
-    pc.createDataChannel(`${LABEL_PREFIX}${index}`, { ordered: true }),
-  );
-  const opened = Promise.all(channels.map(channelOpen));
-  opened.catch(() => {});
   const started = Date.now();
   const remaining = () => Math.max(SETUP_TIMEOUT_MS - (Date.now() - started), 0);
+  let pc: RTCPeerConnection | undefined;
+  let releaseAbort = () => {};
+  let channels: RTCDataChannel[];
+  let opened: Promise<void[]>;
   try {
-    await pc.setLocalDescription(await pc.createOffer());
-    await withTimeout(iceGathered(pc), remaining(), "ICE candidates", signal);
+    const connection = newPeerConnection(stunServers);
+    pc = connection;
+    releaseAbort = closeOnAbort(connection, signal);
+    channels = Array.from({ length: CHANNELS }, (_, index) =>
+      connection.createDataChannel(`${LABEL_PREFIX}${index}`, { ordered: true }),
+    );
+    opened = Promise.all(channels.map(channelOpen));
+    opened.catch(() => {});
+    await connection.setLocalDescription(await connection.createOffer());
+    await withTimeout(iceGathered(connection), remaining(), "ICE candidates", signal);
   } catch (error) {
-    pc.close();
+    pc?.close();
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     // No offer was sent, so the receiver is still waiting for a selection.
     return undefined;

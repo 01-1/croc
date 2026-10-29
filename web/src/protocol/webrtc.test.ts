@@ -177,6 +177,33 @@ describe("WebRTC negotiation", () => {
     expect(FakePeerConnection.last?.closed).toBe(true);
   });
 
+  it("falls back to the relay when the peer connection cannot be created", async () => {
+    vi.stubGlobal(
+      "RTCPeerConnection",
+      class {
+        constructor() {
+          throw new DOMException("WebRTC is disabled", "NotSupportedError");
+        }
+      },
+    );
+    await expect(offerWebRTC({} as CrocSocket, new Uint8Array(32), [])).resolves.toBeUndefined();
+    expect(control.sent).toEqual([]);
+  });
+
+  it("falls back to the relay when a data channel cannot be created", async () => {
+    vi.stubGlobal(
+      "RTCPeerConnection",
+      class extends FakePeerConnection {
+        createDataChannel(): FakeChannel & { label: string } {
+          throw new DOMException("Too many channels", "OperationError");
+        }
+      },
+    );
+    await expect(offerWebRTC({} as CrocSocket, new Uint8Array(32), [])).resolves.toBeUndefined();
+    expect(control.sent).toEqual([]);
+    expect(FakePeerConnection.last?.closed).toBe(true);
+  });
+
   it("closes an answered peer connection when the transfer is cancelled", async () => {
     vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
     const abort = new AbortController();
