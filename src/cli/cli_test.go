@@ -1263,6 +1263,13 @@ func TestDirectThresholdRejectsRememberedNonAutoTransport(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "send.json"), []byte(`{"Transport":"`+string(remembered)+`"}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			// A fresh version-check cache keeps the background update check
+			// from writing into the directory while it is being removed.
+			if err := writeVersionCheckCache(filepath.Join(dir, versionCheckCacheName), versionCheckCache{
+				CheckedAt: time.Now().UTC(), LatestVersion: Version,
+			}); err != nil {
+				t.Fatal(err)
+			}
 			// The relay refuses connections, so a send that slips past the
 			// check fails fast instead of waiting for a receiver.
 			err := newApp().Run([]string{"croc", "--ignore-stdin", "--relay", "127.0.0.1:1", "send", "--no-local", "--direct-threshold", "0", "--text", "hello"})
