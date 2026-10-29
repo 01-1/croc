@@ -87,11 +87,22 @@ func asIGD[T igdClient](clients []T) []igdClient {
 func (*upnp) name() string { return "upnp" }
 
 func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (netip.AddrPort, time.Duration, error) {
+	// Look up the external address before touching the mapping, so a failed
+	// lookup can neither leave a new mapping behind nor, during renewal,
+	// disturb one that is working.
+	external, err := m.client.GetExternalIPAddressCtx(ctx)
+	if err != nil {
+		return netip.AddrPort{}, 0, fmt.Errorf("upnp: external address: %w", err)
+	}
+	addr, err := netip.ParseAddr(external)
+	if err != nil {
+		return netip.AddrPort{}, 0, fmt.Errorf("upnp: external address %q: %w", external, err)
+	}
 	lease := uint32(lifetime / time.Second)
 	if m.permanent {
 		lease = 0
 	}
-	err := m.client.AddPortMappingCtx(ctx, "", port, "TCP", port, m.self.String(), true, "croc relay", lease)
+	err = m.client.AddPortMappingCtx(ctx, "", port, "TCP", port, m.self.String(), true, "croc relay", lease)
 	if err != nil && lease != 0 && isOnlyPermanentLease(err) {
 		m.permanent = true
 		lease = 0
@@ -99,18 +110,6 @@ func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (ne
 	}
 	if err != nil {
 		return netip.AddrPort{}, 0, fmt.Errorf("upnp: add TCP port %d: %w", port, err)
-	}
-	// The mapping now exists; remove it again if the rest of setup fails,
-	// because the caller only records ports whose add succeeded.
-	external, err := m.client.GetExternalIPAddressCtx(ctx)
-	if err != nil {
-		m.rollback(port)
-		return netip.AddrPort{}, 0, fmt.Errorf("upnp: external address: %w", err)
-	}
-	addr, err := netip.ParseAddr(external)
-	if err != nil {
-		m.rollback(port)
-		return netip.AddrPort{}, 0, fmt.Errorf("upnp: external address %q: %w", external, err)
 	}
 	granted := time.Duration(lease) * time.Second
 	if lease == 0 {
@@ -123,14 +122,6 @@ func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (ne
 
 func (m *upnp) remove(ctx context.Context, port uint16) error {
 	return m.client.DeletePortMappingCtx(ctx, "", port, "TCP")
-}
-
-// rollback removes a mapping this client just added, using a fresh context
-// because the setup context may be what failed.
-func (m *upnp) rollback(port uint16) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = m.remove(ctx, port)
 }
 
 // isOnlyPermanentLease reports UPnP error 725, OnlyPermanentLeasesSupported.

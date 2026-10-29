@@ -264,7 +264,22 @@ func (f *fakeIGD) DeletePortMappingCtx(_ context.Context, _ string, externalPort
 }
 
 func (f *fakeIGD) GetExternalIPAddressCtx(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.external, f.externalErr
+}
+
+func (f *fakeIGD) setExternalErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.externalErr = err
+}
+
+func (f *fakeIGD) lease(port uint16) (uint32, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	lease, ok := f.leases[port]
+	return lease, ok
 }
 
 func TestUPnPFallsBackToPermanentLeaseAndRemoves(t *testing.T) {
@@ -334,7 +349,7 @@ func TestSilentProtocolDoesNotStarveTheNext(t *testing.T) {
 	}
 }
 
-func TestUPnPRollsBackMappingWhenSetupFails(t *testing.T) {
+func TestUPnPFailedAddressLookupLeavesNoMapping(t *testing.T) {
 	igd := &fakeIGD{leases: map[uint16]uint32{}, externalErr: errors.New("external address unavailable")}
 	_, err := mapWith(context.Background(), Config{Ports: []uint16{9009}}, attempts(
 		func(context.Context) (mapper, error) {
@@ -391,5 +406,25 @@ func TestUPnPDiscoveryPrefersNewerServices(t *testing.T) {
 	})
 	if err != nil || found.client != newer {
 		t.Fatalf("discovery = (%v, %v); want the WANIPConnection:2 service", found, err)
+	}
+}
+
+func TestUPnPFailedRenewalKeepsWorkingMapping(t *testing.T) {
+	igd := &fakeIGD{leases: map[uint16]uint32{}, external: publicAddr.String()}
+	set, err := mapWith(context.Background(), Config{Ports: []uint16{9009}, Lifetime: 2 * time.Second}, attempts(
+		func(context.Context) (mapper, error) {
+			return &upnp{client: igd, self: netip.MustParseAddr("192.168.1.20")}, nil
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+	// A transient SOAP error during the next renewal must not remove the
+	// mapping the code advertises.
+	igd.setExternalErr(errors.New("transient SOAP error"))
+	time.Sleep(1500 * time.Millisecond)
+	if _, ok := igd.lease(9009); !ok {
+		t.Fatal("a failed renewal deleted the working UPnP mapping")
 	}
 }
