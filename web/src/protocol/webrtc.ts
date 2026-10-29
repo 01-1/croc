@@ -66,7 +66,13 @@ export class DataChannelSocket implements DataSocket {
   constructor(
     private channel: DataChannelLike,
     private onClose: () => void = () => {},
+    signal?: AbortSignal,
   ) {
+    if (signal?.aborted) {
+      queueMicrotask(() => this.close());
+    } else {
+      signal?.addEventListener("abort", () => this.close(), { once: true });
+    }
     channel.binaryType = "arraybuffer";
     channel.bufferedAmountLowThreshold = LOW_WATER;
     channel.addEventListener("message", (event: Event) => {
@@ -159,11 +165,13 @@ export class DataChannelSocket implements DataSocket {
   }
 }
 
+class SetupTimeoutError extends Error {}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, what: string, signal?: AbortSignal) {
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       cleanup();
-      reject(new Error(`Timed out waiting for ${what}`));
+      reject(new SetupTimeoutError(`Timed out waiting for ${what}`));
     }, ms);
     const onAbort = () => {
       cleanup();
@@ -218,14 +226,23 @@ function channelIndex(label: string) {
 }
 
 // socketsFor wraps open channels, closing the peer connection once every
-// socket has been closed.
-function socketsFor(pc: RTCPeerConnection, channels: RTCDataChannel[]) {
+// socket has been closed. Cancelling the transfer closes every socket, like
+// the relay's data sockets.
+function socketsFor(pc: RTCPeerConnection, channels: RTCDataChannel[], signal?: AbortSignal) {
   let open = channels.length;
   const closed = () => {
     open -= 1;
     if (open === 0) pc.close();
   };
-  return channels.map((channel) => new DataChannelSocket(channel, closed));
+  return channels.map((channel) => new DataChannelSocket(channel, closed, signal));
+}
+
+// closeOnAbort closes a peer connection that has no sockets yet when the
+// transfer is cancelled.
+function closeOnAbort(pc: RTCPeerConnection, signal?: AbortSignal) {
+  const close = () => pc.close();
+  signal?.addEventListener("abort", close, { once: true });
+  return () => signal?.removeEventListener("abort", close);
 }
 
 function newPeerConnection(stunServers: string[]) {
@@ -244,6 +261,7 @@ export async function offerWebRTC(
   signal?: AbortSignal,
 ): Promise<DataSocket[] | undefined> {
   const pc = newPeerConnection(stunServers);
+  const releaseAbort = closeOnAbort(pc, signal);
   const channels = Array.from({ length: CHANNELS }, (_, index) =>
     pc.createDataChannel(`${LABEL_PREFIX}${index}`, { ordered: true }),
   );
@@ -265,12 +283,22 @@ export async function offerWebRTC(
     { t: "webrtc-offer", m: pc.localDescription?.sdp ?? "", n: CHANNELS },
     key,
   );
-  const answer = await withTimeout(
-    receiveControl(control, key),
-    remaining(),
-    "the WebRTC answer",
-    signal,
-  );
+  let answer: CrocMessage;
+  try {
+    // On a timeout this read stays first in the control socket's queue, so it
+    // consumes the late answer and the next read gets the receiver's
+    // following message.
+    answer = await withTimeout(
+      receiveControl(control, key),
+      remaining(),
+      "the WebRTC answer",
+      signal,
+    );
+  } catch (error) {
+    pc.close();
+    if (error instanceof SetupTimeoutError) return undefined;
+    throw error;
+  }
   if (answer.t === "error") {
     pc.close();
     throw new Error(answer.m || "Peer cancelled the transfer");
@@ -291,7 +319,8 @@ export async function offerWebRTC(
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     return undefined;
   }
-  return socketsFor(pc, channels);
+  releaseAbort();
+  return socketsFor(pc, channels, signal);
 }
 
 export interface WebRTCAnswer {
@@ -323,6 +352,7 @@ export async function answerWebRTC(
       throw new Error("Invalid WebRTC offer");
     }
     pc = newPeerConnection(stunServers);
+    closeOnAbort(pc, signal);
     pc.addEventListener("datachannel", (event) => {
       const index = channelIndex(event.channel.label);
       if (index < 0 || index >= count || channels[index]) {
@@ -348,9 +378,9 @@ export async function answerWebRTC(
   const connection = pc;
   const channelsOpened = opened;
   return {
-    async wait(waitSignal?: AbortSignal) {
+    async wait(waitSignal = signal) {
       await withTimeout(channelsOpened, SETUP_TIMEOUT_MS, "WebRTC data channels", waitSignal);
-      return socketsFor(connection, channels);
+      return socketsFor(connection, channels, waitSignal);
     },
     close() {
       connection.close();

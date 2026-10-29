@@ -1,5 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { DataChannelSocket } from "./webrtc";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CrocSocket } from "./transport";
+import { answerWebRTC, DataChannelSocket, offerWebRTC } from "./webrtc";
+
+const control = vi.hoisted(() => ({
+  sent: [] as { t: string }[],
+  receive: (): Promise<unknown> => new Promise(() => {}),
+}));
+vi.mock("./relay", () => ({
+  sendControl: async (_socket: unknown, message: { t: string }) => {
+    control.sent.push(message);
+  },
+  receiveControl: () => control.receive(),
+}));
 
 // FakeChannel is a pair of linked data channels: send() delivers each message
 // to the peer asynchronously, like RTCDataChannel.
@@ -101,5 +113,83 @@ describe("DataChannelSocket", () => {
     socket.close();
     socket.close();
     expect(closed).toBe(1);
+  });
+});
+
+describe("DataChannelSocket cancellation", () => {
+  it("closes the channel and rejects pending reads when the transfer is cancelled", async () => {
+    const channel = new FakeChannel();
+    const abort = new AbortController();
+    const socket = new DataChannelSocket(channel as unknown as RTCDataChannel, () => {}, abort.signal);
+    const pending = socket.receive();
+    abort.abort();
+    await expect(pending).rejects.toThrow(/closed/);
+    expect(channel.readyState).toBe("closed");
+  });
+});
+
+// FakePeerConnection completes ICE gathering immediately and records close().
+class FakePeerConnection extends EventTarget {
+  static last?: FakePeerConnection;
+  iceGatheringState: RTCIceGatheringState = "complete";
+  localDescription: RTCSessionDescriptionInit | null = null;
+  closed = false;
+  constructor() {
+    super();
+    FakePeerConnection.last = this;
+  }
+  createDataChannel(label: string) {
+    const channel = new FakeChannel() as FakeChannel & { label: string };
+    channel.readyState = "connecting";
+    channel.label = label;
+    return channel;
+  }
+  async createOffer() {
+    return { type: "offer", sdp: "v=0 offer" } as RTCSessionDescriptionInit;
+  }
+  async createAnswer() {
+    return { type: "answer", sdp: "v=0 answer" } as RTCSessionDescriptionInit;
+  }
+  async setLocalDescription(description: RTCSessionDescriptionInit) {
+    this.localDescription = description;
+  }
+  async setRemoteDescription() {}
+  close() {
+    this.closed = true;
+  }
+}
+
+describe("WebRTC negotiation", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    control.sent = [];
+    control.receive = () => new Promise(() => {});
+  });
+
+  it("falls back to the relay when the answer never arrives", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
+    const result = offerWebRTC({} as CrocSocket, new Uint8Array(32), []);
+    await vi.advanceTimersByTimeAsync(13_000);
+    await expect(result).resolves.toBeUndefined();
+    expect(control.sent.map((message) => message.t)).toEqual(["webrtc-offer"]);
+    expect(FakePeerConnection.last?.closed).toBe(true);
+  });
+
+  it("closes an answered peer connection when the transfer is cancelled", async () => {
+    vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
+    const abort = new AbortController();
+    const answered = await answerWebRTC(
+      {} as CrocSocket,
+      new Uint8Array(32),
+      { t: "webrtc-offer", m: "v=0 offer", n: 2 },
+      [],
+      abort.signal,
+    );
+    expect(answered).toBeDefined();
+    expect(control.sent.map((message) => message.t)).toEqual(["webrtc-answer"]);
+    abort.abort();
+    expect(FakePeerConnection.last?.closed).toBe(true);
   });
 });
