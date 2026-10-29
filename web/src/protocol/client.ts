@@ -19,7 +19,7 @@ import {
   sendControl,
 } from "./relay";
 import { normalizeOutgoingFileName, validateSenderInfo } from "./metadata";
-import { verifySink } from "./storage";
+import { hashWhileReceiving, verifySink } from "./storage";
 import { hashFileContents, waitForHash, type FileHashProvider } from "./hash";
 import type {
   CrocMessage,
@@ -39,6 +39,8 @@ import { protocolEngine } from "./engine";
 
 const CHUNK_SIZE = 32 * 1024;
 const MAX_DECOMPRESSED_CHUNK_SIZE = CHUNK_SIZE + 8;
+// Chunks each data socket decodes concurrently.
+const DECODE_WINDOW = 8;
 const PER_FILE_COMPRESSION_FEATURE = "per-file-compression-v1";
 const HANDSHAKE = textEncoder.encode("handshake");
 const IP_REQUEST = textEncoder.encode("ips?");
@@ -626,39 +628,59 @@ export class DataReceiver {
 
   private async read(socket: CrocSocket) {
     const engine = protocolEngine();
+    // Each chunk's decode crosses to the protocol worker and back through
+    // several asynchronous steps, so keep a few chunks decoding at once
+    // instead of waiting for each before reading the next frame. Chunks
+    // carry their own position, and accept() still writes them one at a time.
+    const decoding: Promise<void>[] = [];
     while (!this.stopped) {
       try {
         const encrypted = await socket.receive();
         const compressed =
           !this.noCompress && (this.active?.file.compressed ?? true);
-        const payload =
-          this.cipherHandle === undefined
-            ? await this.decodeLegacy(engine, encrypted, compressed)
-            : await engine.decodeChunk(
-                this.cipherHandle,
-                encrypted,
-                compressed,
-                MAX_DECOMPRESSED_CHUNK_SIZE,
-              );
-        if (payload.byteLength < 9)
-          throw new Error("Received an invalid file chunk");
-        const positionBig = new DataView(
-          payload.buffer,
-          payload.byteOffset,
-          payload.byteLength,
-        ).getBigUint64(0, true);
-        if (positionBig > BigInt(Number.MAX_SAFE_INTEGER)) {
-          throw new Error("Received a file position that is too large");
-        }
-        const position = Number(positionBig);
-        const bytes = payload.subarray(8);
-        await this.accept(position, bytes);
+        const chunk = this.decodeAndAccept(engine, encrypted, compressed);
+        // Fail as soon as any chunk fails, not only when the window waits
+        // on it.
+        chunk.catch((error) => {
+          if (this.stopped) return;
+          this.stopped = true;
+          this.fail(error instanceof Error ? error : new Error(String(error)));
+        });
+        decoding.push(chunk);
+        if (decoding.length >= DECODE_WINDOW) await decoding.shift();
       } catch (error) {
         if (this.stopped) return;
         this.stopped = true;
         this.fail(error instanceof Error ? error : new Error(String(error)));
       }
     }
+  }
+
+  private async decodeAndAccept(
+    engine: ReturnType<typeof protocolEngine>,
+    encrypted: Uint8Array,
+    compressed: boolean,
+  ) {
+    const payload =
+      this.cipherHandle === undefined
+        ? await this.decodeLegacy(engine, encrypted, compressed)
+        : await engine.decodeChunk(
+            this.cipherHandle,
+            encrypted,
+            compressed,
+            MAX_DECOMPRESSED_CHUNK_SIZE,
+          );
+    if (payload.byteLength < 9)
+      throw new Error("Received an invalid file chunk");
+    const positionBig = new DataView(
+      payload.buffer,
+      payload.byteOffset,
+      payload.byteLength,
+    ).getBigUint64(0, true);
+    if (positionBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error("Received a file position that is too large");
+    }
+    await this.accept(Number(positionBig), payload.subarray(8));
   }
 
   private async decodeLegacy(
@@ -866,7 +888,7 @@ export async function receiveFiles(options: {
       }
 
       callbacks.onStatus?.(`Receiving ${displayName}`);
-      const sink = await destination.openFile(file);
+      const sink = hashWhileReceiving(await destination.openFile(file), file.size);
       const beforeFile = totalTransferred;
       try {
         if (!progressStarted) {
