@@ -298,9 +298,11 @@ func TestReconnectClearsDirectStreamingFlag(t *testing.T) {
 	}
 }
 
-func TestDirectPathFailureEndsSendWithLocalDiscovery(t *testing.T) {
-	relay := startTestRelay(t, 2)
-	listener := &fakeTailcatListener{offer: "direct-local-discovery-offer"}
+// newPairedTailcatProvider returns a fake Tailcat transport whose dialer hands
+// the listener the other end of a pipe bundle; configure adjusts the sender's
+// end.
+func newPairedTailcatProvider(configure func(sender *tailcatDataBundle)) *fakeTailcatTransport {
+	listener := &fakeTailcatListener{offer: "paired-direct-offer"}
 	bundles := make(chan *tailcatDataBundle, 1)
 	listener.accept = func(ctx context.Context) (*tailcatDataBundle, error) {
 		select {
@@ -316,8 +318,7 @@ func TestDirectPathFailureEndsSendWithLocalDiscovery(t *testing.T) {
 	}
 	provider.dial = func(ctx context.Context, _ string, _ []byte, _ tailcattransport.PathEvent) (*tailcatDataBundle, error) {
 		sender, receiver := newPipeDataBundles(1)
-		sender.directPath = func() bool { return true }
-		sender.disableDERP = func() error { return errors.New("DERP stayed enabled") }
+		configure(sender)
 		select {
 		case bundles <- sender:
 			return receiver, nil
@@ -328,7 +329,15 @@ func TestDirectPathFailureEndsSendWithLocalDiscovery(t *testing.T) {
 		}
 	}
 	provider.validate = func(string, []byte) error { return nil }
+	return provider
+}
 
+// runSendWithUnusedLANRoute runs a send with local discovery enabled to a
+// receiver that joins through the public relay, so the sender's LAN route is
+// never used. It fails the test unless both sides return.
+func runSendWithUnusedLANRoute(t *testing.T, mode TransportMode, senderProvider, receiverProvider tailcatDataTransport) (senderErr, receiverErr error) {
+	t.Helper()
+	relay := startTestRelay(t, 2)
 	sourcePath := filepath.Join(t.TempDir(), "direct.bin")
 	if err := os.WriteFile(sourcePath, []byte("direct only"), 0o600); err != nil {
 		t.Fatal(err)
@@ -347,17 +356,16 @@ func TestDirectPathFailureEndsSendWithLocalDiscovery(t *testing.T) {
 	}
 	senderOptions := options
 	senderOptions.IsSender = true
-	senderOptions.Transport = TransportDirect
-	// The sender also offers its LAN relay, which this receiver never uses.
+	senderOptions.Transport = mode
 	senderOptions.DisableLocal = false
-	sender, err := newClient(senderOptions, provider)
+	sender, err := newClient(senderOptions, senderProvider)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sender.localIPLookup = func() ([]string, error) { return []string{"127.0.0.1"}, nil }
 	receiverOptions := options
 	receiverOptions.RelayPorts = nil
-	receiver, err := newClient(receiverOptions, provider)
+	receiver, err := newClient(receiverOptions, receiverProvider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,20 +374,103 @@ func TestDirectPathFailureEndsSendWithLocalDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	senderErr := make(chan error, 1)
-	receiverErr := make(chan error, 1)
-	go func() { senderErr <- sender.Send(files, folders, folderCount) }()
+	senderResult := make(chan error, 1)
+	receiverResult := make(chan error, 1)
+	go func() { senderResult <- sender.Send(files, folders, folderCount) }()
 	time.Sleep(100 * time.Millisecond)
-	go func() { receiverErr <- receiver.Receive() }()
+	go func() { receiverResult <- receiver.Receive() }()
 	defer cancelClients(sender, receiver)
-	for name, results := range map[string]chan error{"receiver": receiverErr, "sender": senderErr} {
+	timeout := time.After(10 * time.Second)
+	for _, result := range []struct {
+		name string
+		ch   chan error
+		err  *error
+	}{{"receiver", receiverResult, &receiverErr}, {"sender", senderResult, &senderErr}} {
 		select {
-		case err := <-results:
-			if err == nil || !strings.Contains(err.Error(), ErrDirectPath.Error()) {
-				t.Fatalf("%s error = %v; want the direct path error", name, err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("%s did not return after the direct path failed", name)
+		case *result.err = <-result.ch:
+		case <-timeout:
+			t.Fatalf("%s did not return", result.name)
 		}
+	}
+	return senderErr, receiverErr
+}
+
+func TestTailcatRequiredFailureEndsSendWithLocalDiscovery(t *testing.T) {
+	bootstrapUnreachable := func() *fakeTailcatTransport {
+		provider := newPairedTailcatProvider(func(*tailcatDataBundle) {})
+		provider.listen = func(context.Context, []byte, tailcattransport.PathEvent) (tailcatDataListener, error) {
+			return nil, errors.New("Tailcat bootstrap unreachable")
+		}
+		return provider
+	}
+	tests := []struct {
+		name     string
+		mode     TransportMode
+		sender   func() tailcatDataTransport
+		receiver func() tailcatDataTransport
+		want     string
+	}{
+		{
+			name: "no direct path",
+			mode: TransportDirect,
+			sender: func() tailcatDataTransport {
+				return newPairedTailcatProvider(func(sender *tailcatDataBundle) {
+					sender.directPath = func() bool { return true }
+					sender.disableDERP = func() error { return errors.New("DERP stayed enabled") }
+				})
+			},
+			want: ErrDirectPath.Error(),
+		},
+		{
+			name:   "direct bootstrap unreachable",
+			mode:   TransportDirect,
+			sender: func() tailcatDataTransport { return bootstrapUnreachable() },
+			want:   "Tailcat bootstrap unreachable",
+		},
+		{
+			name: "direct dial fails",
+			mode: TransportDirect,
+			sender: func() tailcatDataTransport {
+				return newPairedTailcatProvider(func(*tailcatDataBundle) {})
+			},
+			receiver: func() tailcatDataTransport {
+				provider := newPairedTailcatProvider(func(*tailcatDataBundle) {})
+				provider.dial = func(context.Context, string, []byte, tailcattransport.PathEvent) (*tailcatDataBundle, error) {
+					return nil, errors.New("Tailcat peer unreachable")
+				}
+				return provider
+			},
+		},
+		{
+			name: "direct peer without Tailcat",
+			mode: TransportDirect,
+			sender: func() tailcatDataTransport {
+				return newPairedTailcatProvider(func(*tailcatDataBundle) {})
+			},
+			receiver: func() tailcatDataTransport { return &unavailableTestDataTransport{} },
+			want:     "requires a Tailcat-capable peer",
+		},
+		{
+			name:   "derp bootstrap unreachable",
+			mode:   TransportDERP,
+			sender: func() tailcatDataTransport { return bootstrapUnreachable() },
+			want:   "Tailcat bootstrap unreachable",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sender := test.sender()
+			receiver := sender
+			if test.receiver != nil {
+				receiver = test.receiver()
+			}
+			senderErr, receiverErr := runSendWithUnusedLANRoute(t, test.mode, sender, receiver)
+			if senderErr == nil || !strings.Contains(senderErr.Error(), test.want) {
+				t.Fatalf("sender error = %v; want %q", senderErr, test.want)
+			}
+			if receiverErr == nil {
+				t.Fatal("receiver succeeded although the sender failed")
+			}
+		})
 	}
 }

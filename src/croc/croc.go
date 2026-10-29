@@ -1524,12 +1524,12 @@ func (c *Client) transferOverLocalRelay(errchan chan<- error) {
 		c.Options.RelayPorts = []string{c.Options.RelayPorts[0]}
 	}
 	c.markSenderRouteReady()
-	errchan <- c.transferWithReconnect(func(attempt int) error {
+	errchan <- connectedRouteResult(c.transferWithReconnect(func(attempt int) error {
 		if attempt == 0 {
 			return nil
 		}
 		return c.senderReconnectRelayAttempt(attempt)
-	})
+	}))
 }
 
 func (c *Client) senderWaitForHandshake(conn *comm.Comm) error {
@@ -1681,13 +1681,33 @@ func receiveControlFrame(conn *comm.Comm) ([]byte, error) {
 	}
 }
 
+// connectedRouteError marks the result of a sender route that the receiver
+// joined. The receiver uses only that route, so its failure ends the send even
+// though the other route is still waiting.
+type connectedRouteError struct{ err error }
+
+func (e connectedRouteError) Error() string { return e.err.Error() }
+func (e connectedRouteError) Unwrap() error { return e.err }
+
+func connectedRouteResult(err error) error {
+	if err == nil {
+		return nil
+	}
+	return connectedRouteError{err: err}
+}
+
+// senderRouteError removes the connectedRouteError marker and reports whether
+// it was present.
+func senderRouteError(err error) (error, bool) {
+	if connected, ok := errors.AsType[connectedRouteError](err); ok {
+		return connected.err, true
+	}
+	return err, false
+}
+
 func isFatalSenderRouteError(err error) bool {
 	if err == nil {
 		return false
-	}
-	// --transport direct never falls back, so the unused route cannot help.
-	if errors.Is(err, ErrDirectPath) {
-		return true
 	}
 	errString := err.Error()
 	return strings.Contains(errString, "refusing files") ||
@@ -1889,12 +1909,12 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 			}
 			log.Debug("exchanged header message")
 			c.markSenderRouteReady()
-			errchan <- c.transferWithReconnect(func(attempt int) error {
+			errchan <- connectedRouteResult(c.transferWithReconnect(func(attempt int) error {
 				if attempt == 0 {
 					return nil
 				}
 				return c.senderReconnectRelayAttempt(attempt)
-			})
+			}))
 		}()
 	} else {
 		c.markExternalIPReady()
@@ -1910,18 +1930,18 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 	}
 	if err == nil {
 		return // no error
-	} else {
-		log.Debugf("error from errchan: %v", c.redactError(err))
-		if strings.Contains(err.Error(), "could not secure channel") {
-			return err
-		}
 	}
-	if !c.Options.DisableLocal {
+	err, connected := senderRouteError(err)
+	log.Debugf("error from errchan: %v", c.redactError(err))
+	if strings.Contains(err.Error(), "could not secure channel") {
+		return err
+	}
+	if !c.Options.DisableLocal && !connected {
 		if isFatalSenderRouteError(err) {
 			return err
 		}
 		log.Debugf("waiting for alternate sender route after: %v", c.redactError(err))
-		err = c.waitForAlternateSenderRoute(errchan, err)
+		err, _ = senderRouteError(c.waitForAlternateSenderRoute(errchan, err))
 	}
 	return err
 }
