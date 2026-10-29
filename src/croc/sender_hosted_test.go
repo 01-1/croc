@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/schollz/croc/v11/src/codephrase"
 	log "github.com/schollz/croc/v11/src/logger"
+	"github.com/schollz/croc/v11/src/tcp"
 )
 
 func TestReceiverCodeWithSenderAddress(t *testing.T) {
@@ -106,6 +108,75 @@ func TestExposeSenderRelayOnlyForDirectTransport(t *testing.T) {
 	}
 	if addr, closeExposure, err := unmapped.exposeSenderRelay(); err != nil || addr.IsValid() || closeExposure == nil {
 		t.Fatalf("failed exposure = (%v, %v); want a plain code and a fallback", addr, err)
+	}
+}
+
+func TestSenderHostedRelayAdmitsOnlyTransferRooms(t *testing.T) {
+	sender := newExposureTestSender(t, TransportDirect)
+	sender.exposeRelayPorts = func(_ context.Context, ports []uint16) (netip.AddrPort, func(), error) {
+		return netip.AddrPortFrom(netip.MustParseAddr("203.0.113.7"), ports[0]), func() {}, nil
+	}
+	if _, _, err := sender.exposeSenderRelay(); err != nil {
+		t.Fatal(err)
+	}
+	address := net.JoinHostPort("127.0.0.1", sender.localRelayPort)
+	// Anyone who learns the exposed address knows the default relay
+	// password, but not the transfer code the rooms are derived from.
+	if conn, _, _, err := tcp.ConnectToTCPServer(address, "pass123", "unrelated-room"); err == nil {
+		conn.Close()
+		t.Fatal("the exposed relay admitted a room that does not belong to the transfer")
+	}
+	reconnectRoom, err := generateReconnectRoom()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.setNextReconnectRoom(reconnectRoom)
+	for _, room := range []string{
+		sender.Options.RoomName,
+		sender.Options.RoomName + "-1",
+		reconnectRoom,
+		reconnectRoom + "-0",
+	} {
+		conn, _, _, err := tcp.ConnectToTCPServer(address, "pass123", room)
+		if err != nil {
+			t.Fatalf("the exposed relay rejected transfer room %q: %v", room, err)
+		}
+		conn.Close()
+	}
+	for _, room := range []string{sender.Options.RoomName + "-x", sender.Options.RoomName + "x"} {
+		if conn, _, _, err := tcp.ConnectToTCPServer(address, "pass123", room); err == nil {
+			conn.Close()
+			t.Fatalf("the exposed relay admitted %q", room)
+		}
+	}
+}
+
+func TestSenderHostedRelayPairsOnlyWithSender(t *testing.T) {
+	sender := newExposureTestSender(t, TransportDirect)
+	room := sender.Options.RoomName
+	sender1 := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40001}
+	sender6 := &net.TCPAddr{IP: net.IPv6loopback, Port: 40002}
+	strangerA := &net.TCPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 40003}
+	strangerB := &net.TCPAddr{IP: net.ParseIP("2001:db8::2"), Port: 40004}
+	tests := []struct {
+		name          string
+		room          string
+		peer, waiting net.Addr
+		want          bool
+	}{
+		{name: "receiver opens a transfer room", room: room, peer: strangerA, want: true},
+		{name: "receiver joins the sender", room: room + "-0", peer: strangerA, waiting: sender1, want: true},
+		{name: "sender joins the receiver", room: room + "-1", peer: sender6, waiting: strangerB, want: true},
+		{name: "strangers pair in a guessed room", room: room + "-0", peer: strangerB, waiting: strangerA},
+		{name: "stranger opens an unrelated room", room: "unrelated-room", peer: strangerA},
+		{name: "sender opens an unrelated room", room: "unrelated-room", peer: sender1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sender.admitToSenderRelay(test.room, test.peer, test.waiting); got != test.want {
+				t.Fatalf("admitToSenderRelay = %t; want %t", got, test.want)
+			}
+		})
 	}
 }
 

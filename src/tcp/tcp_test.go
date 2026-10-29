@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1007,4 +1008,61 @@ func TestDualStackRelayBridgesIPv4AndIPv6(t *testing.T) {
 		}
 	}
 	assert.Equal(t, want, got)
+}
+
+func TestAdmissionFilterRefusesJoinAndKeepsWaitingPeer(t *testing.T) {
+	var calls []bool
+	var mu sync.Mutex
+	_, address, stopServer := startConfiguredTestServer(t, WithAdmissionFilter(func(room string, _, waiting net.Addr) bool {
+		mu.Lock()
+		calls = append(calls, waiting != nil)
+		joins := 0
+		for _, join := range calls {
+			if join {
+				joins++
+			}
+		}
+		mu.Unlock()
+		// Admit the first peer, refuse the first join, admit the second.
+		return room == "allowed" && (waiting == nil || joins == 2)
+	}))
+	defer stopServer()
+
+	if conn, _, _, err := ConnectToTCPServer(address, "pass123", "refused"); !errors.Is(err, ErrRoomNotAllowed) {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatalf("opening a refused room: %v", err)
+	}
+	waiting, _, _, err := ConnectToTCPServer(address, "pass123", "allowed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiting.Close()
+	if conn, _, _, err := ConnectToTCPServer(address, "pass123", "allowed"); !errors.Is(err, ErrRoomNotAllowed) {
+		if conn != nil {
+			conn.Close()
+		}
+		t.Fatalf("refused join: %v", err)
+	}
+	joined, _, _, err := ConnectToTCPServer(address, "pass123", "allowed")
+	if err != nil {
+		t.Fatalf("the waiting peer did not keep its room after a refused join: %v", err)
+	}
+	defer joined.Close()
+	if err := joined.Send([]byte("paired")); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		data, err := waiting.Receive()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, []byte{1}) {
+			if string(data) != "paired" {
+				t.Fatalf("waiting peer received %q", data)
+			}
+			break
+		}
+	}
 }

@@ -3,8 +3,10 @@ package croc
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	log "github.com/schollz/croc/v11/src/logger"
@@ -75,6 +77,46 @@ func exposeRelayPorts(ctx context.Context, ports []uint16) (netip.AddrPort, func
 		return netip.AddrPortFrom(ipv6, ports[0]), func() {}, nil
 	}
 	return netip.AddrPort{}, nil, err
+}
+
+// admitToSenderRelay restricts the sender's own relay in --transport direct,
+// which may be reachable from the internet. Peers may only open this
+// transfer's rooms, and a room pairs only when one of its two peers is the
+// sender, whose connections to its own relay come over loopback. Strangers
+// therefore cannot exchange traffic through it, even by guessing a room from
+// the code's first word.
+func (c *Client) admitToSenderRelay(room string, peer, waiting net.Addr) bool {
+	if !c.transferRoom(room) {
+		return false
+	}
+	return waiting == nil || isLoopbackAddr(peer) || isLoopbackAddr(waiting)
+}
+
+func isLoopbackAddr(addr net.Addr) bool {
+	if addr == nil {
+		return false
+	}
+	addrPort, err := netip.ParseAddrPort(addr.String())
+	return err == nil && addrPort.Addr().IsLoopback()
+}
+
+// transferRoom reports whether room belongs to this transfer: its control
+// room or a reconnect room, or one of their data rooms ("<room>-<index>").
+func (c *Client) transferRoom(room string) bool {
+	if base, index, ok := strings.Cut(room, "-"); ok {
+		if _, err := strconv.ParseUint(index, 10, 8); err != nil {
+			return false
+		}
+		room = base
+	}
+	c.redactMu.Lock()
+	defer c.redactMu.Unlock()
+	for _, allowed := range []string{c.baseRoomName, c.Options.RoomName, c.nextReconnectRoom} {
+		if allowed != "" && room == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 // connectSenderHostedRelay dials the relay address embedded in the code.
