@@ -184,21 +184,34 @@ func (s *Set) Address() netip.Addr { return s.external }
 
 func (s *Set) renew(ctx context.Context, every time.Duration) {
 	defer close(s.done)
-	ticker := time.NewTicker(max(every, time.Second))
+	ticker := time.NewTicker(max(every, time.Nanosecond))
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			nextEvery := s.lifetime / 2
 			for _, port := range s.ports {
 				addCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				_, _, err := s.mapper.add(addCtx, port, s.lifetime)
+				_, granted, err := s.mapper.add(addCtx, port, s.lifetime)
 				cancel()
-				if err != nil && ctx.Err() == nil {
-					s.logf("portmap: renewing %s mapping for TCP %d: %v", s.mapper.name(), port, err)
+				if err == nil && granted <= 0 {
+					err = errors.New("gateway granted no lifetime")
 				}
+				if err != nil {
+					// A failed renewal must not lengthen the retry interval
+					// while an earlier, shorter grant may still be active.
+					nextEvery = min(nextEvery, every)
+					if ctx.Err() == nil {
+						s.logf("portmap: renewing %s mapping for TCP %d: %v", s.mapper.name(), port, err)
+					}
+					continue
+				}
+				nextEvery = min(nextEvery, granted/2)
 			}
+			every = max(nextEvery, time.Nanosecond)
+			ticker.Reset(every)
 		}
 	}
 }
