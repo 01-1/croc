@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -64,11 +65,17 @@ func (c *Client) exposeSenderRelay() (netip.AddrPort, func(), error) {
 func exposeRelayPorts(ctx context.Context, ports []uint16) (netip.AddrPort, func(), error) {
 	mapCtx, cancel := context.WithTimeout(ctx, senderRelayExposeTimeout)
 	defer cancel()
-	set, err := portmap.Map(mapCtx, portmap.Config{Ports: ports, Logf: log.Debugf})
+	set, err := portmap.Map(mapCtx, portmap.Config{
+		Ports: ports,
+		Logf:  log.Debugf,
+		OnPermanentMapping: func() {
+			fmt.Fprint(os.Stderr, formatUnlimitedPortForwardNotice(ports))
+		},
+	})
 	if err == nil {
 		return netip.AddrPortFrom(set.Address(), ports[0]), func() {
 			if closeErr := set.Close(); closeErr != nil {
-				log.Debugf("removing relay port mappings: %v", closeErr)
+				fmt.Fprintf(os.Stderr, "\nCould not remove router port forwards: %v\nAfter croc has stopped, run: croc cleanup-ports\n", closeErr)
 			}
 		}, nil
 	}

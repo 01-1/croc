@@ -26,8 +26,12 @@ type upnp struct {
 	self   netip.Addr
 	// permanent is set when the gateway only accepts unlimited leases
 	// (UPnP error 725); those mappings rely on remove at exit.
-	permanent bool
+	permanent          bool
+	onPermanentMapping func()
+	noticeOnce         sync.Once
 }
+
+const mappingDescription = "croc relay"
 
 // upnpSearches find IGD connection services, in order of preference.
 var upnpSearches = []func(context.Context) ([]igdClient, error){
@@ -102,11 +106,15 @@ func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (ne
 	if m.permanent {
 		lease = 0
 	}
-	err = m.client.AddPortMappingCtx(ctx, "", port, "TCP", port, m.self.String(), true, "croc relay", lease)
+	if lease == 0 {
+		m.notifyPermanentMapping()
+	}
+	err = m.client.AddPortMappingCtx(ctx, "", port, "TCP", port, m.self.String(), true, mappingDescription, lease)
 	if err != nil && lease != 0 && isOnlyPermanentLease(err) {
 		m.permanent = true
 		lease = 0
-		err = m.client.AddPortMappingCtx(ctx, "", port, "TCP", port, m.self.String(), true, "croc relay", 0)
+		m.notifyPermanentMapping()
+		err = m.client.AddPortMappingCtx(ctx, "", port, "TCP", port, m.self.String(), true, mappingDescription, 0)
 	}
 	if err != nil {
 		return netip.AddrPort{}, 0, fmt.Errorf("upnp: add TCP port %d: %w", port, err)
@@ -118,6 +126,14 @@ func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (ne
 		granted = lifetime
 	}
 	return netip.AddrPortFrom(addr, port), granted, nil
+}
+
+func (m *upnp) notifyPermanentMapping() {
+	m.noticeOnce.Do(func() {
+		if m.onPermanentMapping != nil {
+			m.onPermanentMapping()
+		}
+	})
 }
 
 func (m *upnp) remove(ctx context.Context, port uint16) error {

@@ -131,6 +131,9 @@ type Options struct {
 	DisableClipboard  bool
 	ExtendedClipboard bool
 	Transport         TransportMode `json:",omitempty"`
+
+	// HostedAddressWords keeps the sender relay address readable aloud.
+	HostedAddressWords bool `json:",omitempty"`
 }
 
 // TransportMode controls how a sender selects the file-data connection after
@@ -1872,6 +1875,9 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 	displayCode := c.Options.SharedSecret
 	if senderHosted.IsValid() {
 		displayCode = codephrase.WithSenderAddress(displayCode, senderHosted)
+		if c.Options.HostedAddressWords {
+			displayCode = codephrase.WithSenderAddressWords(c.Options.SharedSecret, senderHosted)
+		}
 		c.codeWithSenderAddress = displayCode
 	}
 	flags := &strings.Builder{}
@@ -1896,6 +1902,7 @@ func (c *Client) Send(filesInfo []FileInfo, emptyFoldersToTransfer []FileInfo, t
 		}
 	}
 	output, colorEnabled := termui.Output(os.Stderr)
+	fmt.Fprint(output, formatHostedInvitationNotice(senderHosted))
 	fmt.Fprint(output, formatSendInstructions(displayCode, flags.String(), webURL, clipboardNotice, colorEnabled))
 	if c.Options.ShowQrCode && webURL != "" {
 		showReceiveCommandQrCode(webURL)

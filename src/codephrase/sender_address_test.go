@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestSenderAddressRoundTrip(t *testing.T) {
+func TestSenderAddressWordsRoundTrip(t *testing.T) {
 	tests := []struct {
 		addr  string
 		words int
@@ -19,7 +19,7 @@ func TestSenderAddressRoundTrip(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.addr, func(t *testing.T) {
 			addr := netip.MustParseAddrPort(test.addr)
-			code := WithSenderAddress("bacon-pickle-trout", addr)
+			code := WithSenderAddressWords("bacon-pickle-trout", addr)
 			plain, suffix, _ := strings.Cut(code, "@")
 			if plain != "bacon-pickle-trout" || len(strings.Split(suffix, "-")) != test.words {
 				t.Fatalf("WithSenderAddress = %q; want %d address words", code, test.words)
@@ -61,7 +61,7 @@ func TestSplitSenderAddressLeavesOtherCodesUnchanged(t *testing.T) {
 }
 
 func TestSplitSenderAddressRejectsCorruptAddresses(t *testing.T) {
-	valid := WithSenderAddress("bacon-pickle-trout", netip.MustParseAddrPort("203.0.113.7:9009"))
+	valid := WithSenderAddressWords("bacon-pickle-trout", netip.MustParseAddrPort("203.0.113.7:9009"))
 	words := strings.Split(strings.SplitN(valid, "@", 2)[1], "-")
 	tests := map[string]string{
 		"wrong length": "bacon-pickle-trout@" + strings.Join(words[:2], "-"),

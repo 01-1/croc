@@ -17,8 +17,8 @@ import (
 )
 
 // DefaultLifetime is the mapping lifetime requested from the gateway. Mappings
-// are renewed at half their granted lifetime, so a crashed sender's mappings
-// expire within this period.
+// are renewed at half their granted lifetime. Unlimited UPnP leases rely on
+// explicit cleanup instead of expiry.
 const DefaultLifetime = 10 * time.Minute
 
 var (
@@ -75,6 +75,8 @@ type Config struct {
 	Lifetime time.Duration
 	// Logf receives debug messages; nil discards them.
 	Logf func(string, ...any)
+	// OnPermanentMapping runs once before requesting unlimited UPnP leases.
+	OnPermanentMapping func()
 }
 
 // Map maps every port in cfg on the default gateway, trying PCP, NAT-PMP, and
@@ -119,6 +121,9 @@ func mapWith(ctx context.Context, cfg Config, attempts []attempt) (*Set, error) 
 			cancel()
 			errs = append(errs, err)
 			continue
+		}
+		if u, ok := m.(*upnp); ok {
+			u.onPermanentMapping = cfg.OnPermanentMapping
 		}
 		set, err := mapAll(attemptCtx, m, cfg)
 		cancel()
