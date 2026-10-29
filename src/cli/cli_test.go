@@ -1255,6 +1255,24 @@ func TestRememberedDirectThreshold(t *testing.T) {
 	}
 }
 
+func TestDirectThresholdRejectsRememberedNonAutoTransport(t *testing.T) {
+	for _, remembered := range []croc.TransportMode{croc.TransportRelay, croc.TransportDERP} {
+		t.Run(string(remembered), func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CROC_CONFIG_DIR", dir)
+			if err := os.WriteFile(filepath.Join(dir, "send.json"), []byte(`{"Transport":"`+string(remembered)+`"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The relay refuses connections, so a send that slips past the
+			// check fails fast instead of waiting for a receiver.
+			err := newApp().Run([]string{"croc", "--ignore-stdin", "--relay", "127.0.0.1:1", "send", "--no-local", "--direct-threshold", "0", "--text", "hello"})
+			if err == nil || err.Error() != "--direct-threshold only applies to --transport auto" {
+				t.Fatalf("error = %v; want the threshold to be rejected with a remembered %s transport", err, remembered)
+			}
+		})
+	}
+}
+
 func TestWriteTailcatRelayFallbackWarning(t *testing.T) {
 	for _, test := range []struct {
 		name       string

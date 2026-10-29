@@ -616,9 +616,6 @@ func send(c *cli.Context) (err error) {
 	}
 	var directThreshold *int64
 	if c.IsSet("direct-threshold") {
-		if transport != croc.TransportAuto {
-			return errors.New("--direct-threshold only applies to --transport auto")
-		}
 		threshold, err := utils.ParseByteSize(c.String("direct-threshold"))
 		if err != nil {
 			return fmt.Errorf("--direct-threshold: %w", err)
@@ -709,6 +706,11 @@ func send(c *cli.Context) (err error) {
 			return
 		}
 		applyRememberedSendOptions(c, &crocOptions, rememberedOptions)
+	}
+	// Check after remembered options are merged: a remembered relay or derp
+	// transport would otherwise silently ignore an explicit threshold.
+	if c.IsSet("direct-threshold") && crocOptions.Transport != croc.TransportAuto {
+		return errors.New("--direct-threshold only applies to --transport auto")
 	}
 	downgradedTransport, err := resolveSendTransport(&crocOptions)
 	if err != nil {
