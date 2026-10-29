@@ -1722,6 +1722,10 @@ func isFatalSenderRouteError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// --transport direct never falls back, so the unused route cannot help.
+	if errors.Is(err, ErrDirectPath) {
+		return true
+	}
 	errString := err.Error()
 	return strings.Contains(errString, "refusing files") ||
 		strings.Contains(errString, "bad password") ||
