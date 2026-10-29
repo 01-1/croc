@@ -606,18 +606,23 @@ export async function chooseStoredReceiveDestination(offer: TransferOffer) {
 
 // Contiguous bytes sent to the hash worker in one update.
 const HASH_BATCH_BYTES = 1024 * 1024;
+// Out-of-order bytes held for the hash. Past this, a data socket has fallen
+// far behind the others, and the sink's own hash is cheaper than keeping the
+// rest of the file in memory.
+const HASH_AHEAD_LIMIT_BYTES = 16 * 1024 * 1024;
 
 // IncrementalHashSink hashes a receive sink's contents with xxhash while the
 // file arrives, so verification does not read the whole file back afterwards.
 // It hashes the contiguous prefix of the file; chunks that arrive ahead of it
 // wait in memory until the gap fills, which stays small because croc's data
-// sockets interleave chunks. If anything goes wrong it falls back to the
-// wrapped sink's own hash.
+// sockets interleave chunks. If anything goes wrong, or the waiting chunks
+// exceed HASH_AHEAD_LIMIT_BYTES, it falls back to the wrapped sink's own hash.
 class IncrementalHashSink implements ReceiveSink {
   private engine = protocolEngine();
   private handle: Promise<number>;
   private next = 0;
   private ahead = new Map<number, Uint8Array>();
+  private aheadBytes = 0;
   private batch: Uint8Array[] = [];
   private batchBytes = 0;
   private chain: Promise<void> = Promise.resolve();
@@ -639,11 +644,17 @@ class IncrementalHashSink implements ReceiveSink {
     if (this.failed) return;
     if (position !== this.next) {
       this.ahead.set(position, bytes);
+      this.aheadBytes += bytes.byteLength;
+      if (this.aheadBytes > HASH_AHEAD_LIMIT_BYTES) {
+        this.failed = true;
+        this.release();
+      }
       return;
     }
     this.take(bytes);
     for (let chunk = this.ahead.get(this.next); chunk; chunk = this.ahead.get(this.next)) {
       this.ahead.delete(this.next);
+      this.aheadBytes -= chunk.byteLength;
       this.take(chunk);
     }
     if (this.batchBytes >= HASH_BATCH_BYTES || this.next === this.size) this.flush();
@@ -709,6 +720,7 @@ class IncrementalHashSink implements ReceiveSink {
     if (this.released) return;
     this.released = true;
     this.ahead.clear();
+    this.aheadBytes = 0;
     this.batch = [];
     void this.handle.then((handle) => this.engine.hashRelease(handle)).catch(() => undefined);
   }

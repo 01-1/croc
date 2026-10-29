@@ -173,8 +173,9 @@ Two receive-path changes remove most of the browser's per-chunk waiting:
 - Files are hashed with XXH64 while they arrive. The contiguous prefix is sent
   to the worker in about 1 MiB batches; chunks that arrive ahead of it wait
   until the gap fills. Verification then finishes without reading the whole
-  file back. If incremental hashing fails, verification falls back to hashing
-  the stored file.
+  file back. If incremental hashing fails, or more than 16 MiB waits for a
+  gap because one data socket has fallen behind, verification falls back to
+  hashing the stored file.
 
 Measured on Linux x86_64 with Playwright's Chromium Headless Shell
 149.0.7827.55, a 128 MiB incompressible file, and three runs each. Phases come

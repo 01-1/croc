@@ -93,6 +93,28 @@ describe("hashWhileReceiving", () => {
     expect(inner.hashed).toBe(1);
   });
 
+  it("stops buffering and falls back to the sink's hash when one socket stalls", async () => {
+    const size = 24 * 1024 * 1024;
+    const inner = new MemorySink();
+    const sink = hashWhileReceiving(inner, size);
+    const retained = () =>
+      [...(sink as unknown as { ahead: Map<number, Uint8Array> }).ahead.values()].reduce(
+        (total, bytes) => total + bytes.byteLength,
+        0,
+      );
+    // The socket carrying the first chunk falls behind while the others
+    // deliver the rest of the file.
+    const bytes = new Uint8Array(CHUNK);
+    for (let position = CHUNK; position < size; position += CHUNK) {
+      await sink.writeAt(position, bytes);
+      expect(retained()).toBeLessThanOrEqual(16 * 1024 * 1024);
+    }
+    await sink.writeAt(0, bytes);
+    expect(await sink.hash("xxhash")).toEqual(new Uint8Array([9]));
+    expect(inner.hashed).toBe(1);
+    expect(inner.written).toBe(size);
+  });
+
   it("leaves SHA-256 verification to the sink", async () => {
     const data = fixture(CHUNK);
     const inner = new MemorySink();
