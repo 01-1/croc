@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -254,6 +255,11 @@ func TestDirectTransportThroughSenderHostedRelay(t *testing.T) {
 	got, err := os.ReadFile(receivedFile)
 	if err != nil || !bytes.Equal(got, want) {
 		t.Fatalf("received %d bytes (%v); want %d", len(got), err, len(want))
+	}
+	// If the sender's address stops answering, a reconnect can still meet
+	// through the public relay.
+	if candidates := receiver.reconnectRelayCandidates(); !slices.Contains(candidates, unreachableRelay) {
+		t.Fatalf("receiver reconnect candidates = %v; want the public relay %s too", candidates, unreachableRelay)
 	}
 }
 

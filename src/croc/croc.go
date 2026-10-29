@@ -2130,6 +2130,10 @@ func (c *Client) Receive() (err error) {
 		if err == nil {
 			log.Debugf("connected to the sender-hosted relay at %v", c.senderRelayAddress)
 			senderHosted = true
+			// Keep the public relay as a reconnect route in case the
+			// sender's address stops answering mid-transfer.
+			c.rememberReconnectRelayAddress(c.Options.RelayAddress)
+			c.rememberReconnectRelayAddress(c.Options.RelayAddress6)
 		} else {
 			log.Debugf("sender-hosted relay %v unreachable; meeting through the public relay: %v", c.senderRelayAddress, err)
 		}
