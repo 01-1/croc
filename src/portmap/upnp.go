@@ -80,12 +80,16 @@ func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (ne
 	if err != nil {
 		return netip.AddrPort{}, 0, fmt.Errorf("upnp: add TCP port %d: %w", port, err)
 	}
+	// The mapping now exists; remove it again if the rest of setup fails,
+	// because the caller only records ports whose add succeeded.
 	external, err := m.client.GetExternalIPAddressCtx(ctx)
 	if err != nil {
+		m.rollback(port)
 		return netip.AddrPort{}, 0, fmt.Errorf("upnp: external address: %w", err)
 	}
 	addr, err := netip.ParseAddr(external)
 	if err != nil {
+		m.rollback(port)
 		return netip.AddrPort{}, 0, fmt.Errorf("upnp: external address %q: %w", external, err)
 	}
 	granted := time.Duration(lease) * time.Second
@@ -99,6 +103,14 @@ func (m *upnp) add(ctx context.Context, port uint16, lifetime time.Duration) (ne
 
 func (m *upnp) remove(ctx context.Context, port uint16) error {
 	return m.client.DeletePortMappingCtx(ctx, "", port, "TCP")
+}
+
+// rollback removes a mapping this client just added, using a fresh context
+// because the setup context may be what failed.
+func (m *upnp) rollback(port uint16) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = m.remove(ctx, port)
 }
 
 // isOnlyPermanentLease reports UPnP error 725, OnlyPermanentLeasesSupported.

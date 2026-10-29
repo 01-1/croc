@@ -113,6 +113,15 @@ func (g *fakeGateway) record(internal, suggested uint16, lifetime uint32) uint16
 
 var publicAddr = netip.MustParseAddr("203.0.113.7")
 
+// attempts wraps mappers as protocol attempts without their own budgets.
+func attempts(mappers ...func(context.Context) (mapper, error)) []attempt {
+	result := make([]attempt, len(mappers))
+	for i, m := range mappers {
+		result[i] = attempt{new: m}
+	}
+	return result
+}
+
 func TestPCPAndNATPMPMapRenewAndRemove(t *testing.T) {
 	for _, protocol := range []string{"pcp", "nat-pmp"} {
 		t.Run(protocol, func(t *testing.T) {
@@ -124,7 +133,7 @@ func TestPCPAndNATPMPMapRenewAndRemove(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			set, err := mapWith(ctx, Config{Ports: []uint16{9009, 9010}, Lifetime: 2 * time.Second},
-				[]func(context.Context) (mapper, error){func(context.Context) (mapper, error) { return m, nil }})
+				attempts(func(context.Context) (mapper, error) { return m, nil }))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -166,12 +175,12 @@ func TestMapRejectsNonPublicGatewayAndRemovesMappings(t *testing.T) {
 		return natpmp{gateway: gateway.addr()}, nil
 	}
 	_, err := mapWith(context.Background(), Config{Ports: []uint16{9009}},
-		[]func(context.Context) (mapper, error){
+		attempts(
 			func(context.Context) (mapper, error) {
 				return newPCP(gateway.addr(), netip.MustParseAddr("192.168.86.59")), nil
 			},
 			next,
-		})
+		))
 	if !errors.Is(err, ErrNotPublic) {
 		t.Fatalf("error = %v; want ErrNotPublic", err)
 	}
@@ -190,10 +199,10 @@ func TestMapRejectsChangedExternalPortAndFallsBack(t *testing.T) {
 	remapping.mu.Unlock()
 	good := newFakeGateway(t, publicAddr)
 	set, err := mapWith(context.Background(), Config{Ports: []uint16{9009}},
-		[]func(context.Context) (mapper, error){
+		attempts(
 			func(context.Context) (mapper, error) { return natpmp{gateway: remapping.addr()}, nil },
 			func(context.Context) (mapper, error) { return natpmp{gateway: good.addr()}, nil },
-		})
+		))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,19 +225,20 @@ func TestMapFailsWhenNoProtocolResponds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
 	defer cancel()
 	_, err = mapWith(ctx, Config{Ports: []uint16{9009}},
-		[]func(context.Context) (mapper, error){
+		attempts(
 			func(context.Context) (mapper, error) { return natpmp{gateway: addr}, nil },
-		})
+		))
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v; want a deadline failure", err)
 	}
 }
 
 type fakeIGD struct {
-	mu        sync.Mutex
-	permanent bool
-	leases    map[uint16]uint32
-	external  string
+	mu          sync.Mutex
+	permanent   bool
+	leases      map[uint16]uint32
+	external    string
+	externalErr error
 }
 
 func (f *fakeIGD) AddPortMappingCtx(_ context.Context, _ string, externalPort uint16, protocol string, internalPort uint16, _ string, _ bool, _ string, lease uint32) error {
@@ -253,16 +263,18 @@ func (f *fakeIGD) DeletePortMappingCtx(_ context.Context, _ string, externalPort
 	return nil
 }
 
-func (f *fakeIGD) GetExternalIPAddressCtx(context.Context) (string, error) { return f.external, nil }
+func (f *fakeIGD) GetExternalIPAddressCtx(context.Context) (string, error) {
+	return f.external, f.externalErr
+}
 
 func TestUPnPFallsBackToPermanentLeaseAndRemoves(t *testing.T) {
 	igd := &fakeIGD{permanent: true, leases: map[uint16]uint32{}, external: publicAddr.String()}
 	set, err := mapWith(context.Background(), Config{Ports: []uint16{9009, 9010}},
-		[]func(context.Context) (mapper, error){
+		attempts(
 			func(context.Context) (mapper, error) {
 				return &upnp{client: igd, self: netip.MustParseAddr("192.168.1.20")}, nil
 			},
-		})
+		))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,5 +306,45 @@ func TestIsPublic(t *testing.T) {
 		if got := IsPublic(netip.MustParseAddr(addr)); got != want {
 			t.Errorf("IsPublic(%s) = %t; want %t", addr, got, want)
 		}
+	}
+}
+
+func TestSilentProtocolDoesNotStarveTheNext(t *testing.T) {
+	silent, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	silentAddr := silent.LocalAddr().(*net.UDPAddr).AddrPort()
+	good := newFakeGateway(t, publicAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	set, err := mapWith(ctx, Config{Ports: []uint16{9009}}, []attempt{
+		{budget: 300 * time.Millisecond, new: func(context.Context) (mapper, error) {
+			return newPCP(silentAddr, netip.MustParseAddr("192.168.1.20")), nil
+		}},
+		{budget: 2 * time.Second, new: func(context.Context) (mapper, error) { return natpmp{gateway: good.addr()}, nil }},
+	})
+	if err != nil {
+		t.Fatalf("a silent PCP gateway prevented the NAT-PMP fallback: %v", err)
+	}
+	defer set.Close()
+	if set.Protocol() != "nat-pmp" {
+		t.Fatalf("mapped with %s; want nat-pmp", set.Protocol())
+	}
+}
+
+func TestUPnPRollsBackMappingWhenSetupFails(t *testing.T) {
+	igd := &fakeIGD{leases: map[uint16]uint32{}, externalErr: errors.New("external address unavailable")}
+	_, err := mapWith(context.Background(), Config{Ports: []uint16{9009}}, attempts(
+		func(context.Context) (mapper, error) {
+			return &upnp{client: igd, self: netip.MustParseAddr("192.168.1.20")}, nil
+		},
+	))
+	if err == nil {
+		t.Fatal("setup succeeded without an external address")
+	}
+	if len(igd.leases) != 0 {
+		t.Fatalf("UPnP mappings left after failed setup: %v", igd.leases)
 	}
 }

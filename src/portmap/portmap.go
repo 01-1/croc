@@ -38,6 +38,13 @@ func IsPublic(addr netip.Addr) bool {
 	return addr.IsGlobalUnicast() && !addr.IsPrivate() && !cgnat.Contains(addr)
 }
 
+// attempt is one gateway protocol with its own time budget, so a gateway that
+// ignores one protocol cannot use up the time the next protocol needs.
+type attempt struct {
+	budget time.Duration
+	new    func(context.Context) (mapper, error)
+}
+
 type mapper interface {
 	name() string
 	// add maps external port == internal port and returns the external
@@ -79,15 +86,15 @@ func Map(ctx context.Context, cfg Config) (*Set, error) {
 		return nil, ErrNoGateway
 	}
 	gw := netip.AddrPortFrom(gateway, gatewayPort)
-	mappers := []func(context.Context) (mapper, error){
-		func(context.Context) (mapper, error) { return newPCP(gw, self), nil },
-		func(context.Context) (mapper, error) { return natpmp{gateway: gw}, nil },
-		func(ctx context.Context) (mapper, error) { return discoverUPnP(ctx, self) },
+	attempts := []attempt{
+		{budget: 1500 * time.Millisecond, new: func(context.Context) (mapper, error) { return newPCP(gw, self), nil }},
+		{budget: 1500 * time.Millisecond, new: func(context.Context) (mapper, error) { return natpmp{gateway: gw}, nil }},
+		{budget: 3 * time.Second, new: func(ctx context.Context) (mapper, error) { return discoverUPnP(ctx, self) }},
 	}
-	return mapWith(ctx, cfg, mappers)
+	return mapWith(ctx, cfg, attempts)
 }
 
-func mapWith(ctx context.Context, cfg Config, mappers []func(context.Context) (mapper, error)) (*Set, error) {
+func mapWith(ctx context.Context, cfg Config, attempts []attempt) (*Set, error) {
 	if len(cfg.Ports) == 0 {
 		return nil, errors.New("portmap: no ports to map")
 	}
@@ -98,13 +105,22 @@ func mapWith(ctx context.Context, cfg Config, mappers []func(context.Context) (m
 		cfg.Logf = func(string, ...any) {}
 	}
 	var errs []error
-	for _, newMapper := range mappers {
-		m, err := newMapper(ctx)
+	for _, try := range attempts {
+		if ctx.Err() != nil {
+			break
+		}
+		attemptCtx, cancel := ctx, context.CancelFunc(func() {})
+		if try.budget > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, try.budget)
+		}
+		m, err := try.new(attemptCtx)
 		if err != nil {
+			cancel()
 			errs = append(errs, err)
 			continue
 		}
-		set, err := mapAll(ctx, m, cfg)
+		set, err := mapAll(attemptCtx, m, cfg)
+		cancel()
 		if err == nil {
 			return set, nil
 		}
@@ -114,9 +130,9 @@ func mapWith(ctx context.Context, cfg Config, mappers []func(context.Context) (m
 			return nil, err
 		}
 		errs = append(errs, err)
-		if ctx.Err() != nil {
-			break
-		}
+	}
+	if err := ctx.Err(); err != nil {
+		errs = append(errs, err)
 	}
 	return nil, fmt.Errorf("portmap: no gateway protocol mapped the relay ports: %w", errors.Join(errs...))
 }

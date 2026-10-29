@@ -424,7 +424,13 @@ func assignPublicRelay(options *croc.Options, relayIndex int) error {
 
 func assignPublicRelayForCode(options *croc.Options) error {
 	relays := publicrelay.Relays()
-	relayIndex, err := codephrase.RelayIndex(options.SharedSecret, len(relays))
+	// A sender-hosted address suffix must not change the relay, so a receiver
+	// that cannot reach the sender's own relay meets it on the same one.
+	code, _, _, err := codephrase.SplitSenderAddress(options.SharedSecret)
+	if err != nil {
+		return err
+	}
+	relayIndex, err := codephrase.RelayIndex(code, len(relays))
 	if err != nil {
 		return err
 	}
